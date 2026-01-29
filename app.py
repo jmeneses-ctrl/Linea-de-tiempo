@@ -419,7 +419,8 @@ try:
                             img = io.BytesIO()
                             plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2)
                             img.seek(0)
-                            st.download_button(label="💾 Descargar Imagen HD", data=img, file_name=fn, mime="image/png")
+                            st.download_button(label="💾 Descargar Imagen", data=img, file_name=fn, mime="image/png")
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
+

@@ -17,7 +17,8 @@ import numpy as np
 # ==========================================
 st.set_page_config(layout="wide", page_title="Línea de Tiempo Automática")
 
-# ENLACE PROPORCIONADO
+# 👇👇👇 PEGA AQUÍ TU ENLACE DE GOOGLE SHEETS O ONEDRIVE 👇👇👇
+# Enlace proporcionado por ti:
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
 
 # Función para intentar convertir el link de vista a link de descarga directa
@@ -26,9 +27,12 @@ def transformar_url_onedrive(url):
         # Intento 1: Reemplazar guestaccess.aspx por download.aspx
         if "guestaccess.aspx" in url:
             return url.replace("guestaccess.aspx", "download.aspx")
-        # Intento 2: Añadir &download=1 si no lo tiene
+        # Intento 2: Añadir &download=1 si no lo tiene (común en enlaces nuevos)
         if "download=1" not in url:
-            return url + "&download=1"
+            if "?" in url:
+                return url + "&download=1"
+            else:
+                return url + "?download=1"
     return url
 
 URL_ARCHIVO_NUBE = transformar_url_onedrive(URL_ORIGINAL)
@@ -37,11 +41,13 @@ URL_ARCHIVO_NUBE = transformar_url_onedrive(URL_ORIGINAL)
 # 1. FUNCIONES DE CARGA Y CACHÉ
 # ==========================================
 
-@st.cache_data(ttl=60)
+# CORRECCIÓN APLICADA: Usamos cache_resource en lugar de cache_data
+# cache_resource es para objetos como conexiones o archivos abiertos (ExcelFile)
+@st.cache_resource(ttl=60)
 def cargar_datos_desde_nube(url):
     try:
         # Usamos requests para bajar el contenido binario primero
-        response = requests.get(url)
+        response = requests.get(url, timeout=10) # Timeout de seguridad
         response.raise_for_status() # Lanza error si el link falla (404, 403)
         
         # Leemos el contenido como archivo Excel
@@ -319,10 +325,12 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
 
 st.title("📊 Generador de Líneas de Tiempo - Normativas")
 
+# CARGA DE ARCHIVO: Aquí Streamlit leerá la URL o mostrará error si no es válido
 try:
     if not URL_ARCHIVO_NUBE or "PON_AQUI" in URL_ARCHIVO_NUBE:
         st.warning("⚠️ No se ha configurado la URL del archivo de Excel. Por favor, edite la variable 'URL_ARCHIVO_NUBE' en el código.")
     else:
+        # Intentamos cargar el archivo desde la nube
         xl_file = cargar_datos_desde_nube(URL_ARCHIVO_NUBE)
         
         if xl_file is None:

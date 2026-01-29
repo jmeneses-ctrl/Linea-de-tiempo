@@ -6,34 +6,52 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import matplotlib.patheffects as pe 
 import textwrap
-import tempfile
-import os
+import io
+import sys
+import requests
 from datetime import datetime, timedelta
 import numpy as np
 
 # ==========================================
-# 0. CONFIGURACIÓN DE LA PÁGINA
+# 0. CONFIGURACIÓN Y ENLACE NUBE
 # ==========================================
-st.set_page_config(layout="wide", page_title="Generador de Líneas de Tiempo")
+st.set_page_config(layout="wide", page_title="Línea de Tiempo Automática")
 
-# Estilo para ocultar menú predeterminado y footer (opcional)
-st.markdown("""
-<style>
-    .reportview-container { margin-top: -2em; }
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
+# ENLACE PROPORCIONADO
+URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
 
-st.title("📊 Generador de Líneas de Tiempo - Normativas")
-st.markdown("Suba el archivo Excel, seleccione la normativa y configure la visualización.")
+# Función para intentar convertir el link de vista a link de descarga directa
+def transformar_url_onedrive(url):
+    if "sharepoint.com" in url or "onedrive.live.com" in url:
+        # Intento 1: Reemplazar guestaccess.aspx por download.aspx
+        if "guestaccess.aspx" in url:
+            return url.replace("guestaccess.aspx", "download.aspx")
+        # Intento 2: Añadir &download=1 si no lo tiene
+        if "download=1" not in url:
+            return url + "&download=1"
+    return url
+
+URL_ARCHIVO_NUBE = transformar_url_onedrive(URL_ORIGINAL)
 
 # ==========================================
-# 1. FUNCIONES AUXILIARES (LÓGICA)
+# 1. FUNCIONES DE CARGA Y CACHÉ
 # ==========================================
+
+@st.cache_data(ttl=60)
+def cargar_datos_desde_nube(url):
+    try:
+        # Usamos requests para bajar el contenido binario primero
+        response = requests.get(url)
+        response.raise_for_status() # Lanza error si el link falla (404, 403)
+        
+        # Leemos el contenido como archivo Excel
+        file_content = io.BytesIO(response.content)
+        xl_file = pd.ExcelFile(file_content)
+        return xl_file
+    except Exception as e:
+        return None
 
 def normalizar_columnas(df):
-    """Estandariza los nombres de las columnas."""
     df.columns = df.columns.str.strip()
     mapa_cols = {
         'Fecha_Vigente': ['Fecha_Vigente', 'Fecha Vigente', 'Fecha Real', 'Fecha_Real_Manual', 'Fecha Actual', 'Fecha_Real'],
@@ -54,7 +72,6 @@ def fecha_es(fecha, formato="corto"):
     if pd.isnull(fecha): return ""
     meses = {1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'}
     meses_full = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
-    
     if formato == "corto": return f"{fecha.day}-{meses[fecha.month]}"
     elif formato == "eje": return f"{meses[fecha.month]}-{str(fecha.year)[2:]}"
     elif formato == "hoy_full": return f"{fecha.day}/{meses_full[fecha.month]}/{fecha.year}"
@@ -66,38 +83,25 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS (ADAPTADOS PARA STREAMLIT)
+# 2. MOTORES GRÁFICOS
 # ==========================================
-# Nota: Ahora retornan 'fig' en lugar de plt.show()
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
-    """Modo Árbol (Híbrido)"""
-    
     fig, ax = plt.subplots(figsize=(16, 9), constrained_layout=True)
     ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
-    
-    # Fecha de generación en el gráfico
     plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
 
-    # Parámetros
-    ANCHO_CAJA_DIAS = (f_fin - f_inicio).days * 0.08
-    if ANCHO_CAJA_DIAS < 25: ANCHO_CAJA_DIAS = 25
+    ANCHO_CAJA_DIAS = max(25, (f_fin - f_inicio).days * 0.08)
     OFFSET_CONEXION_DIAS = ANCHO_CAJA_DIAS * 0.05
-    
-    NIVEL_MIN_SINGLE = 3.5; STEP_SINGLE = 2.5
-    NIVEL_MIN_ARBOL = 5.0; STEP_ARBOL = 3.0
+    NIVEL_MIN_SINGLE = 3.5; STEP_SINGLE = 2.5; NIVEL_MIN_ARBOL = 5.0; STEP_ARBOL = 3.0
 
-    cajas_ocupadas = []
-    elementos_finales = []
-
-    # Clasificación
+    cajas_ocupadas = []; elementos_finales = []
     grupos = df_plot.groupby('Fecha_Vigente')
     lista_singles = []; lista_arboles = []
     for fecha, grupo in grupos:
         if len(grupo) == 1: lista_singles.append((fecha, grupo.iloc[0]))
         else: lista_arboles.append((fecha, grupo))
 
-    # Singles
     for i, (fecha, row) in enumerate(lista_singles):
         es_positivo = (i % 2 == 0)
         nivel_base = NIVEL_MIN_SINGLE if es_positivo else -NIVEL_MIN_SINGLE
@@ -117,12 +121,9 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
             intentos += 1
         if not encontrado: elementos_finales.append({'tipo': 'single', 'row': row, 'x': fecha, 'y': nivel_actual})
 
-    # Árboles
     for i_arbol, (fecha, grupo) in enumerate(lista_arboles):
-        cantidad = len(grupo)
-        trunk_dir = 1 if i_arbol % 2 == 0 else -1
+        cantidad = len(grupo); trunk_dir = 1 if i_arbol % 2 == 0 else -1
         altura_base_tronco = NIVEL_MIN_ARBOL; encontrado_tronco = False; intentos_tronco = 0
-        
         while intentos_tronco < 15:
             colision_arbol_entero = False; temp_cajas_ramas = []; temp_posiciones = []
             alto_total = altura_base_tronco + (cantidad - 1) * STEP_ARBOL
@@ -140,7 +141,6 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 if colision_arbol_entero: break
                 temp_cajas_ramas.append((x_min_box, x_max_box, y_min_box, y_max_box))
                 temp_posiciones.append({'row': row, 'y_nivel': y_nivel, 'x_caja': x_caja, 'es_derecha': es_derecha})
-
             if not colision_arbol_entero:
                 cajas_ocupadas.extend(temp_cajas_ramas)
                 elementos_finales.append({'tipo': 'arbol', 'fecha': fecha, 'y_fin_tronco': y_fin_tronco, 'ramas': temp_posiciones, 'agente_raiz': grupo.iloc[0]['Agente']})
@@ -149,7 +149,6 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
         if not encontrado_tronco:
              elementos_finales.append({'tipo': 'arbol', 'fecha': fecha, 'y_fin_tronco': y_fin_tronco, 'ramas': temp_posiciones, 'agente_raiz': grupo.iloc[0]['Agente']})
 
-    # Dibujo
     max_abs_y = 4.0
     for item in elementos_finales:
         if item['tipo'] == 'single':
@@ -167,7 +166,6 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 ax.text(pos_txt, carril-0.25, f"{'+' if dias>0 else ''}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
             texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row.get('Hito / Etapa','')), 25)}\n{fecha_es(x)}"
             ax.annotate(texto_lbl, xy=(x, y), xytext=(x, y), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
-
         elif item['tipo'] == 'arbol':
             fecha = item['fecha']; y_fin = item['y_fin_tronco']; ramas = item['ramas']; agente_raiz = item['agente_raiz']
             if abs(y_fin) > max_abs_y: max_abs_y = abs(y_fin)
@@ -197,13 +195,11 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                     va_txt = 'top' if y_nivel > 0 else 'bottom'; offset_txt_y = -0.25 if y_nivel > 0 else 0.25
                     ax.text(pos_txt, y_flecha + offset_txt_y, f"{'+' if dias>0 else ''}{dias}d", ha='center', va=va_txt, fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
 
-    # Finalización
     ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False); ax.yaxis.set_visible(False)
     ax.set_xlim(f_inicio, f_fin)
     margen_y_final = max_abs_y + 3.0
     ax.set_ylim(-margen_y_final, margen_y_final)
 
-    # HOY (Ajuste 0.008)
     if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
         hoy = datetime.now()
         ax.axvline(hoy, color='#e74c3c', ls='--', alpha=0.8, linewidth=1.5, zorder=0)
@@ -213,21 +209,15 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
     ax.xaxis.set_major_locator(mdates.MonthLocator())
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x,p: fecha_es(mdates.num2date(x), "eje")))
     plt.title(f"Línea de Tiempo: {titulo}", fontsize=18, fontweight='bold', color='#2c3e50', pad=20)
-
     leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
     leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
     ax.legend(handles=leyenda, title="Agentes Responsables", loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=4, fancybox=True, shadow=True)
-
-    # RECUADRO PERSONALIZADO
     if tipo_rango == 3:
         txt_rango = f"Periodo Personalizado:\n{f_inicio.strftime('%d/%m/%Y')} - {f_fin.strftime('%d/%m/%Y')}"
         ax.text(0.0, -0.14, txt_rango, transform=ax.transAxes, fontsize=9, color='#555555', va='top', ha='left', bbox=dict(boxstyle="round,pad=0.4", fc="#ecf0f1", ec="#bdc3c7", lw=1))
-
     return fig
 
 def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
-    """Modo Estándar"""
-    
     col_vigente, col_teorica = 'Fecha_Vigente', 'Fecha_teorica'
     ocupacion_niveles, niveles_asignados = {}, []
     BASE_NIVEL_POS = 5.0; BASE_NIVEL_NEG = -5.0; STEP_NIVEL = 2.5; MARGEN_DIAS = 75
@@ -306,15 +296,12 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
         hoy = datetime.now()
         ax.axvline(hoy, color='#e74c3c', linestyle='--', alpha=0.8, linewidth=1.5, zorder=0)
-        
-        # --- AQUÍ ESTÁ EL CAMBIO DE DISTANCIA ---
-        offset_dias_hoy = (f_fin - f_inicio).days * 0.008 # Reducido de 0.03 a 0.008
-        
+        offset_dias_hoy = (f_fin - f_inicio).days * 0.008
         ax.text(hoy - timedelta(days=offset_dias_hoy), limite_superior * 0.95, f"HOY\n{fecha_es(hoy, 'hoy_full')}", color='#e74c3c', fontsize=9, fontweight='bold', ha='right', va='top')
 
     ax.xaxis.set_major_locator(mdates.MonthLocator())
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: fecha_es(mdates.num2date(x), "eje")))
-    plt.title(f"Línea de Tiempo: {titulo}", fontsize=18, fontweight='bold', color='#2c3e50', pad=20)
+    plt.title(f"Línea de Tiempo: {titulo}", fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
     
     leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
     leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
@@ -330,29 +317,23 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
 # 3. INTERFAZ STREAMLIT
 # ==========================================
 
-# 3.1 Carga de Archivo
-archivo_cargado = st.file_uploader("📂 Subir archivo Excel (.xlsx)", type=["xlsx"])
+st.title("📊 Generador de Líneas de Tiempo - Normativas")
 
-if archivo_cargado:
-    try:
-        # Leer todas las hojas para el selector
-        xl = pd.ExcelFile(archivo_cargado)
-        hojas = [h for h in xl.sheet_names if not h.startswith('_')]
+try:
+    if not URL_ARCHIVO_NUBE or "PON_AQUI" in URL_ARCHIVO_NUBE:
+        st.warning("⚠️ No se ha configurado la URL del archivo de Excel. Por favor, edite la variable 'URL_ARCHIVO_NUBE' en el código.")
+    else:
+        xl_file = cargar_datos_desde_nube(URL_ARCHIVO_NUBE)
         
-        if not hojas:
-            st.error("No se encontraron hojas válidas en el Excel.")
+        if xl_file is None:
+            st.error("❌ Error al descargar el archivo. Verifique que el enlace sea público y de descarga directa.")
         else:
-            # 3.2 Menú Lateral de Configuración
-            st.sidebar.header("⚙️ Configuración")
+            hojas = [h for h in xl_file.sheet_names if not h.startswith('_')]
             
-            # Selección de Normativa
+            st.sidebar.header("⚙️ Configuración")
             hoja_seleccionada = st.sidebar.selectbox("Seleccione Normativa:", hojas)
             
-            # Selección de Fechas
-            opcion_fecha = st.sidebar.radio(
-                "Rango de Fechas:",
-                ("Año Calendario Actual", "Ventana Móvil (-12/+12 meses)", "Personalizado")
-            )
+            opcion_fecha = st.sidebar.radio("Rango de Fechas:", ("Año Calendario Actual", "Ventana Móvil (-12/+12 meses)", "Personalizado"))
             
             hoy = datetime.now()
             tipo_rango = 0
@@ -365,7 +346,7 @@ if archivo_cargado:
                 f_inicio = hoy - timedelta(days=365)
                 f_fin = hoy + timedelta(days=365)
                 tipo_rango = 2
-            else: # Personalizado
+            else: 
                 col1, col2 = st.sidebar.columns(2)
                 d_inicio = col1.date_input("Inicio", hoy - timedelta(days=30))
                 d_fin = col2.date_input("Fin", hoy + timedelta(days=30))
@@ -373,15 +354,11 @@ if archivo_cargado:
                 f_fin = pd.to_datetime(d_fin)
                 tipo_rango = 3
                 
-            # Toggle HOY
             mostrar_hoy = st.sidebar.checkbox("Mostrar línea de HOY", value=True)
             
-            # Filtro Nacional/Zonal (Dinámico)
-            # Primero leemos el DF para ver si aplica el filtro
-            df = pd.read_excel(archivo_cargado, sheet_name=hoja_seleccionada)
+            df = pd.read_excel(xl_file, sheet_name=hoja_seleccionada)
             df = normalizar_columnas(df)
             
-            # Chequeo de filtro
             filtro_proceso = "Todo"
             if 'Hito / Etapa' in df.columns:
                 df['Hito_Upper'] = df['Hito / Etapa'].astype(str).str.upper()
@@ -390,10 +367,8 @@ if archivo_cargado:
                 if tiene_zonal and tiene_nacional:
                     filtro_proceso = st.sidebar.radio("Filtro Proceso:", ("Todo", "Zonal", "Nacional"))
             
-            # Botón de Generación
             if st.sidebar.button("Generar Gráfico"):
                 with st.spinner('Generando visualización...'):
-                    # Procesamiento de Datos
                     if filtro_proceso == "Zonal":
                         df = df[df['Hito_Upper'].str.contains('ZONAL') | df['Hito_Upper'].str.contains('COMÚN')].copy()
                     elif filtro_proceso == "Nacional":
@@ -411,7 +386,6 @@ if archivo_cargado:
                         if df_plot.empty:
                             st.warning("⚠️ No hay datos en el rango de fechas seleccionado.")
                         else:
-                            # Asignación de Colores
                             mapa_colores = {
                                 'Comisión': "#0400ff", 'CNE': "#0400ff", 'Participantes': '#27ae60', 
                                 'Participantes e interesados': '#27ae60', 'Interesados': '#27ae60', 
@@ -426,23 +400,18 @@ if archivo_cargado:
                             
                             titulo_limpio = hoja_seleccionada.replace('_', ' ')
                             
-                            # Decisión de Motor Gráfico
                             if requiere_formato_arbol(df_plot):
                                 fig = graficar_modo_arbol(df_plot, titulo_limpio, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango)
                             else:
                                 fig = graficar_modo_estandar(df_plot, titulo_limpio, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango)
                             
-                            # Mostrar en Streamlit
                             st.pyplot(fig)
                             
-                            # Botón de Descarga
                             fn = f"timeline_{titulo_limpio}.png"
                             img = io.BytesIO()
-                            plt.savefig(img, format='png', dpi=150, bbox_inches='tight')
+                            plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2)
                             img.seek(0)
-                            st.download_button(label="💾 Descargar Imagen", data=img, file_name=fn, mime="image/png")
+                            st.download_button(label="💾 Descargar Imagen HD", data=img, file_name=fn, mime="image/png")
 
-    except Exception as e:
-        st.error(f"Error al procesar el archivo: {e}")
-else:
-    st.info("👆 Por favor, suba un archivo Excel para comenzar.")
+except Exception as e:
+    st.error(f"Error al procesar el archivo: {e}")

@@ -9,17 +9,23 @@ import textwrap
 import io
 import sys
 import requests
+import json
 from datetime import datetime, timedelta
 import numpy as np
+from github import Github 
 
 # ==========================================
-# 0. CONFIGURACIÓN Y ENLACE NUBE
+# 0. CONFIGURACIÓN
 # ==========================================
-# CAMBIO 1: Título de la pestaña del navegador simplificado
-st.set_page_config(layout="wide", page_title="Línea de Tiempo")
+st.set_page_config(layout="wide", page_title="Línea de Tiempo", page_icon="📊")
 
-# ENLACE PROPORCIONADO
+# --- TUS DATOS ---
+# Enlace de lectura pública (OneDrive)
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
+
+# Datos para escritura (GitHub)
+GITHUB_REPO_NAME = "alertacode/Linea-de-tiempo" 
+NOMBRE_ARCHIVO_EXCEL = "db_decreto10.xlsx" 
 
 def transformar_url_onedrive(url):
     if "sharepoint.com" in url or "onedrive.live.com" in url:
@@ -35,19 +41,79 @@ def transformar_url_onedrive(url):
 URL_ARCHIVO_NUBE = transformar_url_onedrive(URL_ORIGINAL)
 
 # ==========================================
-# 1. FUNCIONES DE CARGA Y CACHÉ
+# 1. FUNCIONES DE CARGA Y GUARDADO
 # ==========================================
 
 @st.cache_resource(ttl=60)
 def cargar_datos_desde_nube(url):
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         file_content = io.BytesIO(response.content)
         xl_file = pd.ExcelFile(file_content)
         return xl_file
     except Exception as e:
         return None
+
+def guardar_en_github(df_nuevo, hoja_nombre):
+    """Guarda en GitHub Y avisa a Power Automate inmediatamente"""
+    try:
+        # 1. Validaciones de Secretos
+        if "GITHUB_TOKEN" not in st.secrets:
+            st.error("❌ Falta GITHUB_TOKEN en los Secrets.")
+            return False
+        
+        token = st.secrets["GITHUB_TOKEN"]
+        g = Github(token)
+        repo = g.get_repo(GITHUB_REPO_NAME)
+        
+        # 2. Obtener base actual (GitHub o OneDrive) para no borrar otras hojas
+        try:
+            contents = repo.get_contents(NOMBRE_ARCHIVO_EXCEL)
+            excel_base = pd.ExcelFile(io.BytesIO(contents.decoded_content))
+            existe_en_github = True
+        except:
+            # Si no está en GitHub, usamos el de OneDrive como base
+            req = requests.get(URL_ARCHIVO_NUBE)
+            excel_base = pd.ExcelFile(io.BytesIO(req.content))
+            existe_en_github = False
+            contents = None
+
+        # 3. Procesar Excel (Reemplazar solo la hoja editada)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            # Escribir la hoja modificada
+            df_nuevo.to_excel(writer, sheet_name=hoja_nombre, index=False)
+            
+            # Copiar el resto de las hojas
+            for sheet in excel_base.sheet_names:
+                if sheet != hoja_nombre:
+                    try:
+                        df_old = pd.read_excel(excel_base, sheet_name=sheet)
+                        df_old.to_excel(writer, sheet_name=sheet, index=False)
+                    except: continue
+        
+        datos_binarios = output.getvalue()
+        mensaje = f"Update {hoja_nombre} - {datetime.now().strftime('%H:%M:%S')}"
+
+        # 4. Subir a GitHub
+        if existe_en_github:
+            repo.update_file(contents.path, mensaje, datos_binarios, contents.sha)
+        else:
+            repo.create_file(NOMBRE_ARCHIVO_EXCEL, mensaje, datos_binarios)
+
+        # 5. EL "PING" INSTANTÁNEO A POWER AUTOMATE 🚀
+        if "WEBHOOK_URL" in st.secrets:
+            try:
+                requests.post(st.secrets["WEBHOOK_URL"], json={"mensaje": "actualizado_desde_web"}, timeout=5)
+            except Exception as e:
+                st.warning(f"Guardado en GitHub OK, pero falló el aviso rápido: {e}")
+        
+        return True
+
+    except Exception as e:
+        st.error(f"Error técnico al guardar: {e}")
+        return False
 
 def normalizar_columnas(df):
     df.columns = df.columns.str.strip()
@@ -69,10 +135,11 @@ def normalizar_columnas(df):
 def fecha_es(fecha, formato="corto"):
     if pd.isnull(fecha): return ""
     meses = {1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'}
-    meses_full = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
+    meses_full_es = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
+    
     if formato == "corto": return f"{fecha.day}-{meses[fecha.month]}"
     elif formato == "eje": return f"{meses[fecha.month]}-{str(fecha.year)[2:]}"
-    elif formato == "hoy_full": return f"{fecha.day}/{meses_full[fecha.month]}/{fecha.year}"
+    elif formato == "hoy_full": return f"{fecha.day}/{meses_full_es[fecha.month]}/{fecha.year}"
     return f"{fecha.day}/{fecha.month}/{fecha.year}"
 
 def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
@@ -207,8 +274,8 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
     ax.xaxis.set_major_locator(mdates.MonthLocator())
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x,p: fecha_es(mdates.num2date(x), "eje")))
     
-    # CAMBIO 2: Título del gráfico limpio (ya estaba, pero aseguramos consistencia)
-    plt.title(f"Línea de Tiempo: {titulo}", fontsize=18, fontweight='bold', color='#2c3e50', pad=20)
+    titulo_limpio = titulo.replace('_', ' ')
+    plt.title(f"Línea de Tiempo: {titulo_limpio}", fontsize=18, fontweight='bold', color='#2c3e50', pad=20)
     
     leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
     leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
@@ -302,7 +369,9 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
 
     ax.xaxis.set_major_locator(mdates.MonthLocator())
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: fecha_es(mdates.num2date(x), "eje")))
-    plt.title(f"Línea de Tiempo: {titulo}", fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
+    
+    titulo_limpio = titulo.replace('_', ' ')
+    plt.title(f"Línea de Tiempo: {titulo_limpio}", fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
     
     leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
     leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
@@ -318,23 +387,24 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
 # 3. INTERFAZ STREAMLIT
 # ==========================================
 
-# CAMBIO 2: Título de la página simplificado
 st.title("📊 Línea de Tiempo")
 
 try:
-    if not URL_ARCHIVO_NUBE or "PON_AQUI" in URL_ARCHIVO_NUBE:
-        st.warning("⚠️ No se ha configurado la URL del archivo de Excel. Por favor, edite la variable 'URL_ARCHIVO_NUBE' en el código.")
+    xl_file = cargar_datos_desde_nube(URL_ARCHIVO_NUBE)
+    
+    if xl_file is None:
+        st.error("❌ No se pudo conectar con el archivo de OneDrive. Verifica el enlace público y que permita descarga.")
     else:
-        xl_file = cargar_datos_desde_nube(URL_ARCHIVO_NUBE)
+        hojas = [h for h in xl_file.sheet_names if not h.startswith('_')]
         
-        if xl_file is None:
-            st.error("❌ Error al descargar el archivo. Verifique que el enlace sea público y de descarga directa.")
-        else:
-            hojas = [h for h in xl_file.sheet_names if not h.startswith('_')]
-            
+        # --- TABS: VISUALIZACIÓN Y GESTIÓN ---
+        tab1, tab2 = st.tabs(["📈 Visualización", "📝 Gestión de Fechas"])
+
+        # ==========================
+        # PESTAÑA 1: VISUALIZACIÓN
+        # ==========================
+        with tab1:
             st.sidebar.header("⚙️ Configuración")
-            
-            # CAMBIO 3: Ocultar los guiones bajos (_) en el selector, pero manteniendo el valor real
             hoja_seleccionada = st.sidebar.selectbox(
                 "Seleccione Normativa:", 
                 hojas,
@@ -356,8 +426,6 @@ try:
                 tipo_rango = 2
             else: 
                 col1, col2 = st.sidebar.columns(2)
-                # NOTA: Los calendarios se muestran según el idioma del navegador del usuario.
-                # El formato DD/MM/YYYY se fuerza aquí para consistencia visual.
                 d_inicio = col1.date_input("Inicio", hoy - timedelta(days=30), format="DD/MM/YYYY")
                 d_fin = col2.date_input("Fin", hoy + timedelta(days=30), format="DD/MM/YYYY")
                 f_inicio = pd.to_datetime(d_inicio)
@@ -416,14 +484,50 @@ try:
                                 fig = graficar_modo_estandar(df_plot, titulo_limpio, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango)
                             
                             st.pyplot(fig)
+                            
                             fecha_hoy_str = datetime.now().strftime("%d-%m-%Y")
-                            fn = f"{titulo_limpio}_{fecha_hoy_str}.png"
+                            fn = f"timeline_{titulo_limpio}_{fecha_hoy_str}.png"
+                            
                             img = io.BytesIO()
-                            plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2) #Gestión del dpi
+                            plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2)
                             img.seek(0)
-                            st.download_button(label="💾 Descargar Imagen", data=img, file_name=fn, mime="image/png")
+                            st.download_button(label="💾 Descargar Imagen HD", data=img, file_name=fn, mime="image/png")
+
+        # ==========================
+        # PESTAÑA 2: GESTIÓN (EDICIÓN)
+        # ==========================
+        with tab2:
+            st.header("📝 Editor de Fechas")
+            st.info("ℹ️ Aquí puedes modificar las fechas. Al guardar, se enviará el cambio a GitHub y Power Automate actualizará el OneDrive original.")
+            
+            hoja_edit = st.selectbox("Seleccionar Normativa a Editar:", hojas, key="sel_edit", format_func=lambda x: x.replace('_', ' '))
+            
+            # Cargar datos frescos para edición
+            df_edit = pd.read_excel(xl_file, sheet_name=hoja_edit)
+            
+            # Identificar columnas de fecha para que el editor muestre calendarios
+            cols_fecha = [c for c in df_edit.columns if "Fecha" in c or "date" in c.lower()]
+            config_columnas = {c: st.column_config.DateColumn(c, format="DD/MM/YYYY") for c in cols_fecha}
+            
+            # Editor interactivo
+            df_modificado = st.data_editor(
+                df_edit,
+                key="editor_datos",
+                column_config=config_columnas,
+                use_container_width=True,
+                num_rows="dynamic",
+                hide_index=True
+            )
+            
+            if st.button("💾 Guardar Cambios en la Nube", type="primary"):
+                with st.spinner("Guardando cambios y notificando a Power Automate..."):
+                    exito = guardar_en_github(df_modificado, hoja_edit)
+                    if exito:
+                        st.success("✅ ¡Guardado exitoso! OneDrive se actualizará en unos segundos.")
+                        # Limpiamos caché para que al recargar la página se vea la actualización
+                        st.cache_resource.clear()
+                    else:
+                        st.error("❌ Error al guardar. Verifica tus Secrets.")
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
-
-

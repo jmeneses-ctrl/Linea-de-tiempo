@@ -15,19 +15,16 @@ import numpy as np
 # ==========================================
 # 0. CONFIGURACIÓN Y ENLACE NUBE
 # ==========================================
-st.set_page_config(layout="wide", page_title="Línea de Tiempo Automática")
+# CAMBIO 1: Título de la pestaña del navegador simplificado
+st.set_page_config(layout="wide", page_title="Línea de Tiempo")
 
-# 👇👇👇 PEGA AQUÍ TU ENLACE DE GOOGLE SHEETS O ONEDRIVE 👇👇👇
-# Enlace proporcionado por ti:
+# ENLACE PROPORCIONADO
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
 
-# Función para intentar convertir el link de vista a link de descarga directa
 def transformar_url_onedrive(url):
     if "sharepoint.com" in url or "onedrive.live.com" in url:
-        # Intento 1: Reemplazar guestaccess.aspx por download.aspx
         if "guestaccess.aspx" in url:
             return url.replace("guestaccess.aspx", "download.aspx")
-        # Intento 2: Añadir &download=1 si no lo tiene (común en enlaces nuevos)
         if "download=1" not in url:
             if "?" in url:
                 return url + "&download=1"
@@ -41,16 +38,11 @@ URL_ARCHIVO_NUBE = transformar_url_onedrive(URL_ORIGINAL)
 # 1. FUNCIONES DE CARGA Y CACHÉ
 # ==========================================
 
-# CORRECCIÓN APLICADA: Usamos cache_resource en lugar de cache_data
-# cache_resource es para objetos como conexiones o archivos abiertos (ExcelFile)
 @st.cache_resource(ttl=60)
 def cargar_datos_desde_nube(url):
     try:
-        # Usamos requests para bajar el contenido binario primero
-        response = requests.get(url, timeout=10) # Timeout de seguridad
-        response.raise_for_status() # Lanza error si el link falla (404, 403)
-        
-        # Leemos el contenido como archivo Excel
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
         file_content = io.BytesIO(response.content)
         xl_file = pd.ExcelFile(file_content)
         return xl_file
@@ -214,7 +206,10 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
 
     ax.xaxis.set_major_locator(mdates.MonthLocator())
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x,p: fecha_es(mdates.num2date(x), "eje")))
+    
+    # CAMBIO 2: Título del gráfico limpio (ya estaba, pero aseguramos consistencia)
     plt.title(f"Línea de Tiempo: {titulo}", fontsize=18, fontweight='bold', color='#2c3e50', pad=20)
+    
     leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
     leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
     ax.legend(handles=leyenda, title="Agentes Responsables", loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=4, fancybox=True, shadow=True)
@@ -323,14 +318,13 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
 # 3. INTERFAZ STREAMLIT
 # ==========================================
 
-st.title("📊 Generador de Líneas de Tiempo - Normativas")
+# CAMBIO 2: Título de la página simplificado
+st.title("📊 Línea de Tiempo")
 
-# CARGA DE ARCHIVO: Aquí Streamlit leerá la URL o mostrará error si no es válido
 try:
     if not URL_ARCHIVO_NUBE or "PON_AQUI" in URL_ARCHIVO_NUBE:
         st.warning("⚠️ No se ha configurado la URL del archivo de Excel. Por favor, edite la variable 'URL_ARCHIVO_NUBE' en el código.")
     else:
-        # Intentamos cargar el archivo desde la nube
         xl_file = cargar_datos_desde_nube(URL_ARCHIVO_NUBE)
         
         if xl_file is None:
@@ -339,7 +333,13 @@ try:
             hojas = [h for h in xl_file.sheet_names if not h.startswith('_')]
             
             st.sidebar.header("⚙️ Configuración")
-            hoja_seleccionada = st.sidebar.selectbox("Seleccione Normativa:", hojas)
+            
+            # CAMBIO 3: Ocultar los guiones bajos (_) en el selector, pero manteniendo el valor real
+            hoja_seleccionada = st.sidebar.selectbox(
+                "Seleccione Normativa:", 
+                hojas,
+                format_func=lambda x: x.replace('_', ' ')
+            )
             
             opcion_fecha = st.sidebar.radio("Rango de Fechas:", ("Año Calendario Actual", "Ventana Móvil (-12/+12 meses)", "Personalizado"))
             
@@ -356,8 +356,10 @@ try:
                 tipo_rango = 2
             else: 
                 col1, col2 = st.sidebar.columns(2)
-                d_inicio = col1.date_input("Inicio", hoy - timedelta(days=30))
-                d_fin = col2.date_input("Fin", hoy + timedelta(days=30))
+                # NOTA: Los calendarios se muestran según el idioma del navegador del usuario.
+                # El formato DD/MM/YYYY se fuerza aquí para consistencia visual.
+                d_inicio = col1.date_input("Inicio", hoy - timedelta(days=30), format="DD/MM/YYYY")
+                d_fin = col2.date_input("Fin", hoy + timedelta(days=30), format="DD/MM/YYYY")
                 f_inicio = pd.to_datetime(d_inicio)
                 f_fin = pd.to_datetime(d_fin)
                 tipo_rango = 3
@@ -417,10 +419,9 @@ try:
                             
                             fn = f"timeline_{titulo_limpio}.png"
                             img = io.BytesIO()
-                            plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2)
+                            plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2) #Gestión del dpi
                             img.seek(0)
                             st.download_button(label="💾 Descargar Imagen", data=img, file_name=fn, mime="image/png")
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
-

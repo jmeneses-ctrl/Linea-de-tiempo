@@ -416,7 +416,7 @@ try:
                                 fig = graficar_modo_estandar(df_plot, titulo_limpio, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango)
                             
                             st.pyplot(fig)
-                            fecha_hoy_str = datetime.now().strftime("%d-%m-%Y)
+                            fecha_hoy_str = datetime.now().strftime("%d-%m-%Y")
                             fn = f"{titulo_limpio}_{fecha_hoy_str}.png"
                             img = io.BytesIO()
                             plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2) #Gestión del dpi
@@ -425,4 +425,5 @@ try:
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
+
 

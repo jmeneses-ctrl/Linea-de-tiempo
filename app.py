@@ -82,7 +82,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             contents = None
 
         # 2. Cargar el libro con openpyxl
-        wb = openpyxl.load_workbook(file_content)
+        wb = openpyxl.load_workbook(file_content, data_only=False, keep_vba=True)
         
         if hoja_nombre not in wb.sheetnames:
             st.error(f"La hoja '{hoja_nombre}' no existe en el archivo original.")
@@ -92,7 +92,6 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
         
         # 3. Encontrar la columna "Fecha_Real_Manual" dinámicamente
         col_manual_idx = None
-        # Leemos la primera fila para encontrar encabezados
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
         
         target_cols = ["Fecha_Real_Manual", "Fecha Real Manual", "Fecha_Real"]
@@ -106,15 +105,12 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             return False
 
         # 4. Inyectar los datos del DataFrame editado al Excel
-        # Identificamos la columna en el DataFrame de Pandas
         col_manual_key = [c for c in df_editado.columns if "Fecha_Real_Manual" in c or "Fecha Real Manual" in c]
         if not col_manual_key:
              st.error("No se encuentra la columna manual en el editor.")
              return False
         col_manual_key = col_manual_key[0]
         
-        # Escribimos fila por fila 
-        # (Offset de 2: 1 por header Excel, 1 por índice 0 de python)
         for i, fecha_valor in enumerate(df_editado[col_manual_key]):
             row_idx = i + 2 
             val_to_write = fecha_valor if pd.notnull(fecha_valor) else None
@@ -133,7 +129,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
         else:
             repo.create_file(NOMBRE_ARCHIVO_EXCEL, mensaje, datos_binarios)
 
-        # 7. Disparar Webhook de Power Automate (AVISO) 🔔
+        # 7. Disparar Webhook de Power Automate
         if "WEBHOOK_URL" in st.secrets:
             try:
                 requests.post(st.secrets["WEBHOOK_URL"], json={"msg": "update_trigger"}, timeout=5)
@@ -179,7 +175,7 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS (Ahora incluidos)
+# 2. MOTORES GRÁFICOS
 # ==========================================
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
@@ -415,8 +411,20 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     return fig
 
 # ==========================================
-# 3. INTERFAZ STREAMLIT
+# 3. INTERFAZ STREAMLIT (ACTUALIZADA)
 # ==========================================
+
+# --- ACCIONES RÁPIDAS EN SIDEBAR ---
+with st.sidebar:
+    st.header("⚡ Acciones Rápidas")
+    
+    # 1. Enlace directo a OneDrive
+    st.link_button("📂 Abrir Excel en OneDrive", URL_ORIGINAL)
+    
+    # 2. Botón de Recarga Manual (Borra caché y recarga)
+    if st.button("🔄 Forzar Recarga de Datos", type="secondary"):
+        st.cache_resource.clear()
+        st.rerun()
 
 st.title("📊 Línea de Tiempo")
 
@@ -435,7 +443,8 @@ try:
         # PESTAÑA 1: VISUALIZACIÓN
         # ==========================
         with tab1:
-            st.sidebar.header("⚙️ Configuración")
+            st.info("👆 Si acabas de guardar cambios, espera unos segundos y usa el botón 'Forzar Recarga' del menú lateral.")
+            st.sidebar.header("⚙️ Configuración Gráfico")
             hoja_seleccionada = st.sidebar.selectbox(
                 "Seleccione Normativa:", 
                 hojas,
@@ -525,39 +534,55 @@ try:
                             st.download_button(label="💾 Descargar Imagen HD", data=img, file_name=fn, mime="image/png")
 
         # ==========================
-        # PESTAÑA 2: GESTIÓN (EDICIÓN)
+        # PESTAÑA 2: GESTIÓN (MODIFICADA)
         # ==========================
         with tab2:
             st.header("📝 Editor de Fechas")
-            st.info("ℹ️ Modifica solo la Fecha Real Manual. Las fórmulas de Excel se recalcularán en el archivo original.")
             
             hoja_edit = st.selectbox("Seleccionar Normativa a Editar:", hojas, key="sel_edit", format_func=lambda x: x.replace('_', ' '))
             
             # Cargar datos frescos para edición
             df_edit = pd.read_excel(xl_file, sheet_name=hoja_edit)
             
-            # Definir columnas visibles según solicitud
+            # --- 4. ESTADO VISUAL (Semáforo) ---
+            # Creamos una columna visual al vuelo.
+            if "Fecha_Vigente" in df_edit.columns:
+                df_edit["Fecha_Vigente"] = pd.to_datetime(df_edit["Fecha_Vigente"], errors='coerce')
+                hoy = pd.Timestamp.now().normalize()
+                
+                def obtener_estado(fecha):
+                    if pd.isnull(fecha): return "⚪ Pendiente"
+                    if fecha < hoy: return "🔴 Vencido"
+                    return "🟢 Vigente"
+                
+                # Insertamos la columna al principio
+                df_edit.insert(0, "Estado", df_edit["Fecha_Vigente"].apply(obtener_estado))
+
+            # --- 3. COLUMNAS DESEADAS (MODIFICADA) ---
+            # Quitamos 'Responsable', 'Fecha_Proyectada'. Agregamos 'Fecha_teorica' y 'Estado'
             cols_deseadas = [
-                "Norma", "Proceso", "Hito / Etapa", "Responsable", "Agente", 
-                "Fecha_teorica", "Fecha_Proyectada", "Fecha_Real_Manual", 
-                "Fecha_Vigente", "Respuesta/Interactua", "Descripción"
+                "Estado", # Nueva
+                "Norma", "Proceso", "Hito / Etapa", "Agente",  # Sin Responsable
+                "Fecha_teorica", # Agregada
+                "Fecha_Real_Manual", 
+                "Fecha_Vigente", 
+                "Respuesta/Interactua", "Descripción"
             ]
             
             # Filtrar solo las que existen
             cols_finales = [c for c in cols_deseadas if c in df_edit.columns]
             
-            # Configuración de Columnas (Bloqueo y Formato)
+            # Configuración de Columnas
             column_cfg = {
-                # Columnas de Solo Lectura
+                "Estado": st.column_config.TextColumn("Estado", width="small", disabled=True),
                 "Norma": st.column_config.TextColumn(disabled=True),
                 "Proceso": st.column_config.TextColumn(disabled=True),
                 "Hito / Etapa": st.column_config.TextColumn(disabled=True),
-                "Responsable": st.column_config.TextColumn(disabled=True),
                 "Agente": st.column_config.TextColumn(disabled=True),
                 "Respuesta/Interactua": st.column_config.TextColumn(disabled=True),
                 "Descripción": st.column_config.TextColumn(disabled=True),
+                
                 "Fecha_teorica": st.column_config.DateColumn("Fecha Teórica", format="DD/MM/YYYY", disabled=True),
-                "Fecha_Proyectada": st.column_config.DateColumn("Fecha Proyectada", format="DD/MM/YYYY", disabled=True),
                 "Fecha_Vigente": st.column_config.DateColumn("Fecha Vigente (Excel)", format="DD/MM/YYYY", disabled=True),
                 
                 # LA ÚNICA EDITABLE
@@ -574,15 +599,15 @@ try:
                 df_edit[cols_finales],
                 column_config=column_cfg,
                 use_container_width=True,
-                num_rows="fixed", # No permitir agregar filas
+                num_rows="fixed",
                 hide_index=True
             )
             
             if st.button("💾 Guardar Cambios en la Nube", type="primary"):
-                with st.spinner("Guardando sin tocar fórmulas..."):
+                with st.spinner("Guardando cambios y notificando a Power Automate..."):
                     exito = guardar_en_github_manteniendo_formulas(df_modificado, hoja_edit)
                     if exito:
-                        st.success("✅ ¡Guardado! OneDrive actualizará las fórmulas en breve.")
+                        st.success("✅ ¡Guardado exitoso! Dale unos segundos y luego presiona '🔄 Forzar Recarga' en el menú lateral.")
                         st.cache_resource.clear()
                     else:
                         st.error("❌ Error al guardar. Verifica tus Secrets.")

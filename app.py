@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timedelta
 import numpy as np
 from github import Github 
+import openpyxl 
 
 # ==========================================
 # 0. CONFIGURACIÓN
@@ -20,10 +21,7 @@ from github import Github
 st.set_page_config(layout="wide", page_title="Línea de Tiempo", page_icon="📊")
 
 # --- TUS DATOS ---
-# Enlace de lectura pública (OneDrive)
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
-
-# Datos para escritura (GitHub)
 GITHUB_REPO_NAME = "alertacode/Linea-de-tiempo" 
 NOMBRE_ARCHIVO_EXCEL = "db_decreto10.xlsx" 
 
@@ -49,66 +47,95 @@ def cargar_datos_desde_nube(url):
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
+        # Usamos engine='openpyxl' para mejor compatibilidad
         file_content = io.BytesIO(response.content)
-        xl_file = pd.ExcelFile(file_content)
+        xl_file = pd.ExcelFile(file_content, engine='openpyxl')
         return xl_file
     except Exception as e:
         return None
 
-def guardar_en_github(df_nuevo, hoja_nombre):
-    """Guarda en GitHub Y avisa a Power Automate inmediatamente"""
+def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
+    """
+    Abre el Excel existente usando openpyxl y actualiza SOLO la columna manual.
+    Esto preserva las fórmulas en las otras columnas.
+    """
     try:
-        # 1. Validaciones de Secretos
         if "GITHUB_TOKEN" not in st.secrets:
-            st.error("❌ Falta GITHUB_TOKEN en los Secrets.")
+            st.error("❌ Falta GITHUB_TOKEN en Secrets.")
             return False
         
         token = st.secrets["GITHUB_TOKEN"]
         g = Github(token)
         repo = g.get_repo(GITHUB_REPO_NAME)
         
-        # 2. Obtener base actual (GitHub o OneDrive) para no borrar otras hojas
+        # 1. Obtener el archivo binario ACTUAL de GitHub
         try:
             contents = repo.get_contents(NOMBRE_ARCHIVO_EXCEL)
-            excel_base = pd.ExcelFile(io.BytesIO(contents.decoded_content))
-            existe_en_github = True
+            file_content = io.BytesIO(contents.decoded_content)
+            existe = True
         except:
-            # Si no está en GitHub, usamos el de OneDrive como base
+            # Si no existe en GH, lo bajamos de OneDrive
             req = requests.get(URL_ARCHIVO_NUBE)
-            excel_base = pd.ExcelFile(io.BytesIO(req.content))
-            existe_en_github = False
+            file_content = io.BytesIO(req.content)
+            existe = False
             contents = None
 
-        # 3. Procesar Excel (Reemplazar solo la hoja editada)
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # Escribir la hoja modificada
-            df_nuevo.to_excel(writer, sheet_name=hoja_nombre, index=False)
-            
-            # Copiar el resto de las hojas
-            for sheet in excel_base.sheet_names:
-                if sheet != hoja_nombre:
-                    try:
-                        df_old = pd.read_excel(excel_base, sheet_name=sheet)
-                        df_old.to_excel(writer, sheet_name=sheet, index=False)
-                    except: continue
+        # 2. Cargar el libro con openpyxl
+        wb = openpyxl.load_workbook(file_content)
         
-        datos_binarios = output.getvalue()
-        mensaje = f"Update {hoja_nombre} - {datetime.now().strftime('%H:%M:%S')}"
+        if hoja_nombre not in wb.sheetnames:
+            st.error(f"La hoja {hoja_nombre} no existe en el archivo original.")
+            return False
+            
+        ws = wb[hoja_nombre]
+        
+        # 3. Encontrar la columna "Fecha_Real_Manual" dinámicamente
+        col_manual_idx = None
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        
+        target_cols = ["Fecha_Real_Manual", "Fecha Real Manual", "Fecha_Real"]
+        for idx, col_name in enumerate(header_row, 1): 
+            if col_name and str(col_name).strip() in target_cols:
+                col_manual_idx = idx
+                break
+        
+        if col_manual_idx is None:
+            st.error("No se encontró la columna 'Fecha_Real_Manual' en el Excel original.")
+            return False
 
-        # 4. Subir a GitHub
-        if existe_en_github:
+        # 4. Inyectar los datos del DataFrame editado al Excel
+        # Identificamos la columna en el DataFrame
+        col_manual_key = [c for c in df_editado.columns if "Fecha_Real_Manual" in c or "Fecha Real Manual" in c]
+        if not col_manual_key:
+             st.error("No se encuentra la columna manual en el editor.")
+             return False
+        col_manual_key = col_manual_key[0]
+        
+        # Escribimos fila por fila (Offset de 2: 1 por header Excel, 1 por índice 0 de python)
+        for i, fecha_valor in enumerate(df_editado[col_manual_key]):
+            row_idx = i + 2 
+            val_to_write = fecha_valor if pd.notnull(fecha_valor) else None
+            ws.cell(row=row_idx, column=col_manual_idx).value = val_to_write
+
+        # 5. Guardar en memoria
+        output = io.BytesIO()
+        wb.save(output)
+        datos_binarios = output.getvalue()
+        
+        mensaje = f"Update Manual Data {hoja_nombre} - {datetime.now().strftime('%H:%M')}"
+
+        # 6. Subir a GitHub
+        if existe:
             repo.update_file(contents.path, mensaje, datos_binarios, contents.sha)
         else:
             repo.create_file(NOMBRE_ARCHIVO_EXCEL, mensaje, datos_binarios)
 
-        # 5. EL "PING" INSTANTÁNEO A POWER AUTOMATE 🚀
+        # 7. Webhook Power Automate (Aviso instantáneo)
         if "WEBHOOK_URL" in st.secrets:
             try:
-                requests.post(st.secrets["WEBHOOK_URL"], json={"mensaje": "actualizado_desde_web"}, timeout=5)
-            except Exception as e:
-                st.warning(f"Guardado en GitHub OK, pero falló el aviso rápido: {e}")
-        
+                requests.post(st.secrets["WEBHOOK_URL"], json={"msg": "update"}, timeout=5)
+            except: pass
+            
         return True
 
     except Exception as e:
@@ -498,33 +525,60 @@ try:
         # ==========================
         with tab2:
             st.header("📝 Editor de Fechas")
-            st.info("ℹ️ Aquí puedes modificar las fechas. Al guardar, se enviará el cambio a GitHub y Power Automate actualizará el OneDrive original.")
+            st.info("ℹ️ Modifica solo la Fecha Real Manual. Las fórmulas de Excel se recalcularán en el archivo original.")
             
             hoja_edit = st.selectbox("Seleccionar Normativa a Editar:", hojas, key="sel_edit", format_func=lambda x: x.replace('_', ' '))
             
             # Cargar datos frescos para edición
             df_edit = pd.read_excel(xl_file, sheet_name=hoja_edit)
             
-            # Identificar columnas de fecha para que el editor muestre calendarios
-            cols_fecha = [c for c in df_edit.columns if "Fecha" in c or "date" in c.lower()]
-            config_columnas = {c: st.column_config.DateColumn(c, format="DD/MM/YYYY") for c in cols_fecha}
+            # Definir columnas visibles según solicitud
+            cols_deseadas = [
+                "Norma", "Proceso", "Hito / Etapa", "Responsable", "Agente", 
+                "Fecha_teorica", "Fecha_Proyectada", "Fecha_Real_Manual", 
+                "Fecha_Vigente", "Respuesta/Interactua", "Descripción"
+            ]
             
+            # Filtrar solo las que existen
+            cols_finales = [c for c in cols_deseadas if c in df_edit.columns]
+            
+            # Configuración de Columnas (Bloqueo y Formato)
+            column_cfg = {
+                # Columnas de Solo Lectura
+                "Norma": st.column_config.TextColumn(disabled=True),
+                "Proceso": st.column_config.TextColumn(disabled=True),
+                "Hito / Etapa": st.column_config.TextColumn(disabled=True),
+                "Responsable": st.column_config.TextColumn(disabled=True),
+                "Agente": st.column_config.TextColumn(disabled=True),
+                "Respuesta/Interactua": st.column_config.TextColumn(disabled=True),
+                "Descripción": st.column_config.TextColumn(disabled=True),
+                "Fecha_teorica": st.column_config.DateColumn("Fecha Teórica", format="DD/MM/YYYY", disabled=True),
+                "Fecha_Proyectada": st.column_config.DateColumn("Fecha Proyectada", format="DD/MM/YYYY", disabled=True),
+                "Fecha_Vigente": st.column_config.DateColumn("Fecha Vigente (Excel)", format="DD/MM/YYYY", disabled=True),
+                
+                # LA ÚNICA EDITABLE
+                "Fecha_Real_Manual": st.column_config.DateColumn(
+                    "✏️ Fecha Real Manual", 
+                    help="Modifica esta fecha para actualizar el cálculo en Excel",
+                    format="DD/MM/YYYY",
+                    disabled=False 
+                )
+            }
+
             # Editor interactivo
             df_modificado = st.data_editor(
-                df_edit,
-                key="editor_datos",
-                column_config=config_columnas,
+                df_edit[cols_finales],
+                column_config=column_cfg,
                 use_container_width=True,
-                num_rows="dynamic",
+                num_rows="fixed", # No permitir agregar filas
                 hide_index=True
             )
             
             if st.button("💾 Guardar Cambios en la Nube", type="primary"):
-                with st.spinner("Guardando cambios y notificando a Power Automate..."):
-                    exito = guardar_en_github(df_modificado, hoja_edit)
+                with st.spinner("Guardando sin tocar fórmulas..."):
+                    exito = guardar_en_github_manteniendo_formulas(df_modificado, hoja_edit)
                     if exito:
-                        st.success("✅ ¡Guardado exitoso! OneDrive se actualizará en unos segundos.")
-                        # Limpiamos caché para que al recargar la página se vea la actualización
+                        st.success("✅ ¡Guardado! OneDrive actualizará las fórmulas en breve.")
                         st.cache_resource.clear()
                     else:
                         st.error("❌ Error al guardar. Verifica tus Secrets.")

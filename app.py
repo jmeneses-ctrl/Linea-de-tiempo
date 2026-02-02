@@ -39,7 +39,7 @@ def transformar_url_onedrive(url):
 URL_ARCHIVO_NUBE = transformar_url_onedrive(URL_ORIGINAL)
 
 # ==========================================
-# 1. FUNCIONES DE CARGA Y GUARDADO
+# 1. FUNCIONES
 # ==========================================
 
 @st.cache_resource(ttl=60)
@@ -47,7 +47,6 @@ def cargar_datos_desde_nube(url):
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
-        # Usamos engine='openpyxl' para máxima compatibilidad con fórmulas
         file_content = io.BytesIO(response.content)
         xl_file = pd.ExcelFile(file_content, engine='openpyxl')
         return xl_file
@@ -56,11 +55,9 @@ def cargar_datos_desde_nube(url):
 
 def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
     """
-    Abre el Excel existente usando openpyxl y actualiza SOLO la columna manual.
-    Esto preserva las fórmulas en las otras columnas.
+    Edición quirúrgica preservando fórmulas y estilos.
     """
     try:
-        # Validar credenciales
         if "GITHUB_TOKEN" not in st.secrets:
             st.error("❌ Falta GITHUB_TOKEN en Secrets.")
             return False
@@ -75,71 +72,59 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             file_content = io.BytesIO(contents.decoded_content)
             existe = True
         except:
-            # Si no existe en GH (primera vez), lo bajamos de OneDrive
-            req = requests.get(URL_ARCHIVO_NUBE)
-            file_content = io.BytesIO(req.content)
-            existe = False
-            contents = None
+            st.error("⚠️ El archivo no existe en GitHub. Súbelo manualmente primero.")
+            return False
 
-        # 2. Cargar el libro con openpyxl
+        # 2. Cargar preservando vba y estilos
         wb = openpyxl.load_workbook(file_content, data_only=False, keep_vba=True)
         
         if hoja_nombre not in wb.sheetnames:
-            st.error(f"La hoja '{hoja_nombre}' no existe en el archivo original.")
+            st.error(f"La hoja '{hoja_nombre}' no existe.")
             return False
             
         ws = wb[hoja_nombre]
         
-        # 3. Encontrar la columna "Fecha_Real_Manual" dinámicamente
+        # 3. Buscar columna Manual
         col_manual_idx = None
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
         
         target_cols = ["Fecha_Real_Manual", "Fecha Real Manual", "Fecha_Real"]
-        for idx, col_name in enumerate(header_row, 1): # Excel es base 1
+        for idx, col_name in enumerate(header_row, 1):
             if col_name and str(col_name).strip() in target_cols:
                 col_manual_idx = idx
                 break
         
         if col_manual_idx is None:
-            st.error("⚠️ No se encontró la columna 'Fecha_Real_Manual' en el Excel original.")
+            st.error("⚠️ No se encontró la columna 'Fecha_Real_Manual'.")
             return False
 
-        # 4. Inyectar los datos del DataFrame editado al Excel
+        # 4. Inyectar datos
         col_manual_key = [c for c in df_editado.columns if "Fecha_Real_Manual" in c or "Fecha Real Manual" in c]
-        if not col_manual_key:
-             st.error("No se encuentra la columna manual en el editor.")
-             return False
+        if not col_manual_key: return False
         col_manual_key = col_manual_key[0]
         
         for i, fecha_valor in enumerate(df_editado[col_manual_key]):
-            row_idx = i + 2 
+            row_idx = i + 2
             val_to_write = fecha_valor if pd.notnull(fecha_valor) else None
             ws.cell(row=row_idx, column=col_manual_idx).value = val_to_write
 
-        # 5. Guardar el archivo modificado en memoria
+        # 5. Guardar
         output = io.BytesIO()
         wb.save(output)
         datos_binarios = output.getvalue()
         
-        mensaje = f"Update Manual Data {hoja_nombre} - {datetime.now().strftime('%H:%M')}"
+        mensaje = f"Update Web {datetime.now().strftime('%H:%M')}"
+        repo.update_file(contents.path, mensaje, datos_binarios, contents.sha)
 
-        # 6. Subir a GitHub
-        if existe:
-            repo.update_file(contents.path, mensaje, datos_binarios, contents.sha)
-        else:
-            repo.create_file(NOMBRE_ARCHIVO_EXCEL, mensaje, datos_binarios)
-
-        # 7. Disparar Webhook de Power Automate
+        # 6. Webhook
         if "WEBHOOK_URL" in st.secrets:
-            try:
-                requests.post(st.secrets["WEBHOOK_URL"], json={"msg": "update_trigger"}, timeout=5)
-            except: 
-                pass 
+            try: requests.post(st.secrets["WEBHOOK_URL"], json={"msg": "update"}, timeout=5)
+            except: pass
             
         return True
 
     except Exception as e:
-        st.error(f"Error técnico al guardar: {e}")
+        st.error(f"Error técnico: {e}")
         return False
 
 def normalizar_columnas(df):
@@ -163,7 +148,6 @@ def fecha_es(fecha, formato="corto"):
     if pd.isnull(fecha): return ""
     meses = {1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'}
     meses_full_es = {1:'Enero',2:'Febrero',3:'Marzo',4:'Abril',5:'Mayo',6:'Junio',7:'Julio',8:'Agosto',9:'Septiembre',10:'Octubre',11:'Noviembre',12:'Diciembre'}
-    
     if formato == "corto": return f"{fecha.day}-{meses[fecha.month]}"
     elif formato == "eje": return f"{meses[fecha.month]}-{str(fecha.year)[2:]}"
     elif formato == "hoy_full": return f"{fecha.day}/{meses_full_es[fecha.month]}/{fecha.year}"
@@ -175,7 +159,7 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS
+# 2. MOTORES GRÁFICOS (COMPLETOS)
 # ==========================================
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
@@ -294,102 +278,6 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
 
     if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
         hoy = datetime.now()
-        ax.axvline(hoy, color='#e74c3c', ls='--', alpha=0.8, linewidth=1.5, zorder=0)
-        offset_dias_hoy = (f_fin - f_inicio).days * 0.008
-        ax.text(hoy - timedelta(days=offset_dias_hoy), margen_y_final - 0.5, f"HOY\n{fecha_es(hoy, 'hoy_full')}", color='#e74c3c', ha='right', va='top', fontweight='bold', fontsize=9)
-
-    ax.xaxis.set_major_locator(mdates.MonthLocator())
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x,p: fecha_es(mdates.num2date(x), "eje")))
-    
-    titulo_limpio = titulo.replace('_', ' ')
-    plt.title(f"Línea de Tiempo: {titulo_limpio}", fontsize=18, fontweight='bold', color='#2c3e50', pad=20)
-    
-    leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
-    leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
-    ax.legend(handles=leyenda, title="Agentes Responsables", loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=4, fancybox=True, shadow=True)
-    if tipo_rango == 3:
-        txt_rango = f"Periodo Personalizado:\n{f_inicio.strftime('%d/%m/%Y')} - {f_fin.strftime('%d/%m/%Y')}"
-        ax.text(0.0, -0.14, txt_rango, transform=ax.transAxes, fontsize=9, color='#555555', va='top', ha='left', bbox=dict(boxstyle="round,pad=0.4", fc="#ecf0f1", ec="#bdc3c7", lw=1))
-    return fig
-
-def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
-    col_vigente, col_teorica = 'Fecha_Vigente', 'Fecha_teorica'
-    ocupacion_niveles, niveles_asignados = {}, []
-    BASE_NIVEL_POS = 5.0; BASE_NIVEL_NEG = -5.0; STEP_NIVEL = 2.5; MARGEN_DIAS = 75
-    niveles_flechas_pos, niveles_flechas_neg = [0.8, 1.6, 2.4], [-0.8, -1.6, -2.4]
-    ocupacion_flechas = {lvl: [] for lvl in niveles_flechas_pos + niveles_flechas_neg}
-
-    for index, row in df_plot.iterrows():
-        fecha = row[col_vigente]; es_positivo = (index % 2 == 0)
-        nivel_actual = BASE_NIVEL_POS if es_positivo else BASE_NIVEL_NEG
-        encontrado, intentos = False, 0
-        while intentos < 20:
-            colision = False
-            if nivel_actual in ocupacion_niveles:
-                for f_ocupada in ocupacion_niveles[nivel_actual]:
-                    if abs((fecha - f_ocupada).days) < MARGEN_DIAS: colision = True; break
-            if not colision:
-                if nivel_actual not in ocupacion_niveles: ocupacion_niveles[nivel_actual] = []
-                ocupacion_niveles[nivel_actual].append(fecha)
-                niveles_asignados.append(nivel_actual); encontrado = True; break
-            if es_positivo: nivel_actual += STEP_NIVEL
-            else: nivel_actual -= STEP_NIVEL
-            intentos += 1
-        if not encontrado:
-            niveles_asignados.append(nivel_actual)
-            if nivel_actual not in ocupacion_niveles: ocupacion_niveles[nivel_actual] = []
-            ocupacion_niveles[nivel_actual].append(fecha)
-    
-    df_plot['nivel'] = niveles_asignados
-
-    def obtener_carril_flecha(f_inicio, f_fin, es_arriba):
-        carriles = niveles_flechas_pos if es_arriba else niveles_flechas_neg
-        start, end = min(f_inicio, f_fin), max(f_inicio, f_fin)
-        for carril in carriles:
-            libre = True
-            for (o_start, o_end) in ocupacion_flechas[carril]:
-                if (start <= o_end + timedelta(days=5)) and (end >= o_start - timedelta(days=5)): libre = False; break
-            if libre: ocupacion_flechas[carril].append((start, end)); return carril
-        return carriles[len(carriles) // 2]
-
-    fig, ax = plt.subplots(figsize=(16, 9), constrained_layout=True)
-    ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
-    plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
-
-    for i, row in df_plot.iterrows():
-        f_vigente = row[col_vigente]; f_teorica = row[col_teorica]; nivel = row['nivel']
-        agente = str(row['Agente']); color = mapa_colores.get(agente, '#7f8c8d')
-        
-        ax.vlines(f_vigente, 0, nivel, color=color, alpha=0.5, linewidth=1, linestyle='-', zorder=1)
-        ax.scatter(f_vigente, 0, s=60, color=color, marker='o', zorder=3)
-
-        if pd.notnull(f_teorica):
-            dias = (f_vigente - f_teorica).days
-            if abs(dias) > 5:
-                es_arriba = (nivel > 0)
-                altura_cota = obtener_carril_flecha(f_teorica, f_vigente, es_arriba)
-                f_ini_vis = max(f_teorica, f_inicio)
-                if f_teorica >= f_inicio:
-                    ax.vlines(f_teorica, 0, altura_cota, color='#bdc3c7', alpha=0.8, linestyles=':', zorder=1)
-                    ax.scatter(f_teorica, 0, s=20, color='#bdc3c7', marker='|', zorder=2)
-                ax.annotate("", xy=(f_vigente, altura_cota), xytext=(f_ini_vis, altura_cota), arrowprops=dict(arrowstyle="->", color='#555555', lw=0.9), zorder=20)
-                pos_txt = max(f_ini_vis, f_vigente - timedelta(days=6))
-                signo = "+" if dias > 0 else ""
-                ax.text(pos_txt, altura_cota - 0.25, f"{signo}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
-
-        texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row['Hito / Etapa']), 25)}\n{fecha_es(f_vigente)}"
-        ax.annotate(texto_lbl, xy=(f_vigente, nivel), xytext=(f_vigente, nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
-
-    ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False); ax.yaxis.set_visible(False)
-    ax.set_xlim(f_inicio, f_fin)
-    
-    max_y = df_plot['nivel'].max() if not df_plot['nivel'].empty else 4
-    min_y = df_plot['nivel'].min() if not df_plot['nivel'].empty else -4
-    limite_superior = max(8, max_y + 3.0); limite_inferior = min(-8, min_y - 3.0)
-    ax.set_ylim(limite_inferior, limite_superior)
-
-    if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
-        hoy = datetime.now()
         ax.axvline(hoy, color='#e74c3c', linestyle='--', alpha=0.8, linewidth=1.5, zorder=0)
         offset_dias_hoy = (f_fin - f_inicio).days * 0.008
         ax.text(hoy - timedelta(days=offset_dias_hoy), limite_superior * 0.95, f"HOY\n{fecha_es(hoy, 'hoy_full')}", color='#e74c3c', fontsize=9, fontweight='bold', ha='right', va='top')
@@ -411,18 +299,17 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     return fig
 
 # ==========================================
-# 3. INTERFAZ STREAMLIT (ACTUALIZADA)
+# 3. INTERFAZ STREAMLIT (FINAL)
 # ==========================================
 
-# --- ACCIONES RÁPIDAS EN SIDEBAR ---
+# --- BOTONES DE ACCIÓN (SIDEBAR) ---
 with st.sidebar:
-    st.header("⚡ Acciones Rápidas")
+    st.header("⚡ Acciones")
+    # 1. ENLACE DIRECTO
+    st.link_button("📂 Abrir Excel Original", URL_ORIGINAL)
     
-    # 1. Enlace directo a OneDrive
-    st.link_button("📂 Abrir Excel en OneDrive", URL_ORIGINAL)
-    
-    # 2. Botón de Recarga Manual (Borra caché y recarga)
-    if st.button("🔄 Forzar Recarga de Datos", type="secondary"):
+    # 2. BOTÓN RECARGAR
+    if st.button("🔄 Forzar Recarga"):
         st.cache_resource.clear()
         st.rerun()
 
@@ -432,19 +319,17 @@ try:
     xl_file = cargar_datos_desde_nube(URL_ARCHIVO_NUBE)
     
     if xl_file is None:
-        st.error("❌ No se pudo conectar con el archivo de OneDrive. Verifica el enlace público y que permita descarga.")
+        st.error("❌ No se pudo conectar con el archivo de OneDrive. Verifica el enlace público.")
     else:
         hojas = [h for h in xl_file.sheet_names if not h.startswith('_')]
         
-        # --- TABS: VISUALIZACIÓN Y GESTIÓN ---
         tab1, tab2 = st.tabs(["📈 Visualización", "📝 Gestión de Fechas"])
 
         # ==========================
         # PESTAÑA 1: VISUALIZACIÓN
         # ==========================
         with tab1:
-            st.info("👆 Si acabas de guardar cambios, espera unos segundos y usa el botón 'Forzar Recarga' del menú lateral.")
-            st.sidebar.header("⚙️ Configuración Gráfico")
+            st.sidebar.header("⚙️ Configuración")
             hoja_seleccionada = st.sidebar.selectbox(
                 "Seleccione Normativa:", 
                 hojas,
@@ -534,18 +419,17 @@ try:
                             st.download_button(label="💾 Descargar Imagen HD", data=img, file_name=fn, mime="image/png")
 
         # ==========================
-        # PESTAÑA 2: GESTIÓN (MODIFICADA)
+        # PESTAÑA 2: GESTIÓN (EDICIÓN)
         # ==========================
         with tab2:
             st.header("📝 Editor de Fechas")
+            st.info("ℹ️ Modifica solo la Fecha Real Manual.")
             
             hoja_edit = st.selectbox("Seleccionar Normativa a Editar:", hojas, key="sel_edit", format_func=lambda x: x.replace('_', ' '))
             
-            # Cargar datos frescos para edición
             df_edit = pd.read_excel(xl_file, sheet_name=hoja_edit)
             
-            # --- 4. ESTADO VISUAL (Semáforo) ---
-            # Creamos una columna visual al vuelo.
+            # --- AGREGAR ESTADO (SEMÁFORO) ---
             if "Fecha_Vigente" in df_edit.columns:
                 df_edit["Fecha_Vigente"] = pd.to_datetime(df_edit["Fecha_Vigente"], errors='coerce')
                 hoy = pd.Timestamp.now().normalize()
@@ -555,24 +439,22 @@ try:
                     if fecha < hoy: return "🔴 Vencido"
                     return "🟢 Vigente"
                 
-                # Insertamos la columna al principio
                 df_edit.insert(0, "Estado", df_edit["Fecha_Vigente"].apply(obtener_estado))
 
-            # --- 3. COLUMNAS DESEADAS (MODIFICADA) ---
-            # Quitamos 'Responsable', 'Fecha_Proyectada'. Agregamos 'Fecha_teorica' y 'Estado'
+            # --- DEFINIR COLUMNAS (MODIFICADO) ---
             cols_deseadas = [
                 "Estado", # Nueva
-                "Norma", "Proceso", "Hito / Etapa", "Agente",  # Sin Responsable
+                "Norma", "Proceso", "Hito / Etapa", "Agente", # Sin Responsable
                 "Fecha_teorica", # Agregada
                 "Fecha_Real_Manual", 
                 "Fecha_Vigente", 
                 "Respuesta/Interactua", "Descripción"
             ]
             
-            # Filtrar solo las que existen
+            # Filtrar
             cols_finales = [c for c in cols_deseadas if c in df_edit.columns]
             
-            # Configuración de Columnas
+            # Configuración
             column_cfg = {
                 "Estado": st.column_config.TextColumn("Estado", width="small", disabled=True),
                 "Norma": st.column_config.TextColumn(disabled=True),
@@ -581,33 +463,31 @@ try:
                 "Agente": st.column_config.TextColumn(disabled=True),
                 "Respuesta/Interactua": st.column_config.TextColumn(disabled=True),
                 "Descripción": st.column_config.TextColumn(disabled=True),
-                
                 "Fecha_teorica": st.column_config.DateColumn("Fecha Teórica", format="DD/MM/YYYY", disabled=True),
                 "Fecha_Vigente": st.column_config.DateColumn("Fecha Vigente (Excel)", format="DD/MM/YYYY", disabled=True),
                 
-                # LA ÚNICA EDITABLE
+                # EDITABLE
                 "Fecha_Real_Manual": st.column_config.DateColumn(
                     "✏️ Fecha Real Manual", 
-                    help="Modifica esta fecha para actualizar el cálculo en Excel",
+                    help="Modifica esta fecha",
                     format="DD/MM/YYYY",
                     disabled=False 
                 )
             }
 
-            # Editor interactivo
             df_modificado = st.data_editor(
                 df_edit[cols_finales],
                 column_config=column_cfg,
                 use_container_width=True,
-                num_rows="fixed",
+                num_rows="fixed", 
                 hide_index=True
             )
             
             if st.button("💾 Guardar Cambios en la Nube", type="primary"):
-                with st.spinner("Guardando cambios y notificando a Power Automate..."):
+                with st.spinner("Guardando cambios..."):
                     exito = guardar_en_github_manteniendo_formulas(df_modificado, hoja_edit)
                     if exito:
-                        st.success("✅ ¡Guardado exitoso! Dale unos segundos y luego presiona '🔄 Forzar Recarga' en el menú lateral.")
+                        st.success("✅ ¡Guardado! Espera unos segundos y usa el botón 'Forzar Recarga'.")
                         st.cache_resource.clear()
                     else:
                         st.error("❌ Error al guardar. Verifica tus Secrets.")

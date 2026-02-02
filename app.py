@@ -21,8 +21,6 @@ import openpyxl
 st.set_page_config(layout="wide", page_title="Línea de Tiempo", page_icon="📊")
 
 # --- TUS DATOS ---
-# RECUERDA: Has cambiado tus tokens. Asegúrate de que esta URL siga siendo válida 
-# y apunte al archivo correcto en tu SharePoint/OneDrive.
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
 GITHUB_REPO_NAME = "alertacode/Linea-de-tiempo" 
 NOMBRE_ARCHIVO_EXCEL = "db_decreto10.xlsx" 
@@ -50,7 +48,6 @@ def cargar_datos_desde_nube(url):
         response = requests.get(url, timeout=15)
         response.raise_for_status()
         file_content = io.BytesIO(response.content)
-        # Usamos openpyxl para asegurar compatibilidad
         xl_file = pd.ExcelFile(file_content, engine='openpyxl')
         return xl_file
     except Exception as e:
@@ -59,7 +56,6 @@ def cargar_datos_desde_nube(url):
 def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
     """
     Edición quirúrgica segura. 
-    Se eliminó keep_vba=True para evitar corrupción en archivos .xlsx estándar.
     """
     try:
         if "GITHUB_TOKEN" not in st.secrets:
@@ -70,16 +66,14 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
         g = Github(token)
         repo = g.get_repo(GITHUB_REPO_NAME)
         
-        # 1. Obtener el archivo binario ACTUAL de GitHub
         try:
             contents = repo.get_contents(NOMBRE_ARCHIVO_EXCEL)
             file_content = io.BytesIO(contents.decoded_content)
             existe = True
         except:
-            st.error("⚠️ El archivo no existe en GitHub. Súbelo manualmente primero.")
+            st.error("⚠️ El archivo no existe en GitHub.")
             return False
 
-        # 2. Cargar con openpyxl (Modo seguro para xlsx)
         wb = openpyxl.load_workbook(file_content, data_only=False) 
         
         if hoja_nombre not in wb.sheetnames:
@@ -88,7 +82,6 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             
         ws = wb[hoja_nombre]
         
-        # 3. Buscar columna Manual
         col_manual_idx = None
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
         
@@ -102,7 +95,6 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             st.error("⚠️ No se encontró la columna 'Fecha_Real_Manual'.")
             return False
 
-        # 4. Inyectar datos
         col_manual_key = [c for c in df_editado.columns if "Fecha_Real_Manual" in c or "Fecha Real Manual" in c]
         if not col_manual_key: return False
         col_manual_key = col_manual_key[0]
@@ -112,7 +104,6 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             val_to_write = fecha_valor if pd.notnull(fecha_valor) else None
             ws.cell(row=row_idx, column=col_manual_idx).value = val_to_write
 
-        # 5. Guardar
         output = io.BytesIO()
         wb.save(output)
         datos_binarios = output.getvalue()
@@ -120,7 +111,6 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
         mensaje = f"Update Web {datetime.now().strftime('%H:%M')}"
         repo.update_file(contents.path, mensaje, datos_binarios, contents.sha)
 
-        # 6. Webhook
         if "WEBHOOK_URL" in st.secrets:
             try: requests.post(st.secrets["WEBHOOK_URL"], json={"msg": "update"}, timeout=5)
             except: pass
@@ -163,7 +153,7 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS (AGENTE EN NEGRITA)
+# 2. MOTORES GRÁFICOS (CORREGIDOS)
 # ==========================================
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
@@ -245,12 +235,12 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 pos_txt = max(max(f_teorica, f_inicio), x - timedelta(days=6))
                 ax.text(pos_txt, carril-0.25, f"{'+' if dias>0 else ''}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
             
-            # --- MODIFICACIÓN: AGENTE EN NEGRITA (USANDO TeX) ---
-            ag_txt = textwrap.fill(agente.upper(), 20)
+            # --- MODIFICACIÓN: AGENTE EN NEGRITA (Mathtext con espacios escapados) ---
+            # Reemplazamos espacios por '\ ' para que Mathtext no los borre
+            ag_clean = agente.upper().replace(" ", r"\ ")
             hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
             fe_txt = fecha_es(x)
-            texto_lbl = rf"$\textbf{{{ag_txt}}}$" + f"\n{hi_txt}\n{fe_txt}"
-            # ----------------------------------------------------
+            texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
             
             ax.annotate(texto_lbl, xy=(x, y), xytext=(x, y), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
         elif item['tipo'] == 'arbol':
@@ -268,12 +258,11 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 ax.plot([fecha, x_linea_fin], [y_nivel, y_nivel], color=color, linewidth=1.5, zorder=2)
                 ax.scatter(fecha, y_nivel, s=30, color=color, zorder=3)
                 
-                # --- MODIFICACIÓN: AGENTE EN NEGRITA (USANDO TeX) ---
-                ag_txt = textwrap.fill(agente.upper(), 20)
+                # --- MODIFICACIÓN: AGENTE EN NEGRITA (Mathtext con espacios escapados) ---
+                ag_clean = agente.upper().replace(" ", r"\ ")
                 hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
                 fe_txt = fecha_es(fecha)
-                texto_lbl = rf"$\textbf{{{ag_txt}}}$" + f"\n{hi_txt}\n{fe_txt}"
-                # ----------------------------------------------------
+                texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
 
                 ax.annotate(texto_lbl, xy=(x_caja, y_nivel), xytext=(x_caja, y_nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=1.0), ha='center', va='center', fontsize=7.5, color='#2c3e50', zorder=10)
                 f_teorica = row.get('Fecha_teorica', pd.NaT)
@@ -298,7 +287,7 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
         hoy = datetime.now()
         ax.axvline(hoy, color='#e74c3c', linestyle='--', alpha=0.8, linewidth=1.5, zorder=0)
         offset_dias_hoy = (f_fin - f_inicio).days * 0.008
-        ax.text(hoy - timedelta(days=offset_dias_hoy), limite_superior * 0.95, f"HOY\n{fecha_es(hoy, 'hoy_full')}", color='#e74c3c', fontsize=9, fontweight='bold', ha='right', va='top')
+        ax.text(hoy - timedelta(days=offset_dias_hoy), margen_y_final - 0.5, f"HOY\n{fecha_es(hoy, 'hoy_full')}", color='#e74c3c', fontsize=9, fontweight='bold', ha='right', va='top')
 
     ax.xaxis.set_major_locator(mdates.MonthLocator())
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: fecha_es(mdates.num2date(x), "eje")))
@@ -360,6 +349,15 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
     plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
 
+    # --- CORRECCIÓN DE ERROR LIMITE_SUPERIOR ---
+    # Calculamos los límites ANTES de iterar para usarlos en el texto "HOY"
+    max_y = df_plot['nivel'].max() if not df_plot['nivel'].empty else 4
+    min_y = df_plot['nivel'].min() if not df_plot['nivel'].empty else -4
+    limite_superior = max(8, max_y + 3.0)
+    limite_inferior = min(-8, min_y - 3.0)
+    ax.set_ylim(limite_inferior, limite_superior)
+    # ------------------------------------------
+
     for i, row in df_plot.iterrows():
         f_vigente = row[col_vigente]; f_teorica = row[col_teorica]; nivel = row['nivel']
         agente = str(row['Agente']); color = mapa_colores.get(agente, '#7f8c8d')
@@ -387,10 +385,7 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False); ax.yaxis.set_visible(False)
     ax.set_xlim(f_inicio, f_fin)
     
-    max_y = df_plot['nivel'].max() if not df_plot['nivel'].empty else 4
-    min_y = df_plot['nivel'].min() if not df_plot['nivel'].empty else -4
-    limite_superior = max(8, max_y + 3.0); limite_inferior = min(-8, min_y - 3.0)
-    ax.set_ylim(limite_inferior, limite_superior)
+    # Límites ya calculados arriba para evitar error
 
     if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
         hoy = datetime.now()

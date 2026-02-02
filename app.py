@@ -48,12 +48,16 @@ def cargar_datos_desde_nube(url):
         response = requests.get(url, timeout=15)
         response.raise_for_status()
         file_content = io.BytesIO(response.content)
+        # Cargamos con openpyxl para asegurar compatibilidad
         xl_file = pd.ExcelFile(file_content, engine='openpyxl')
         return xl_file
     except Exception as e:
         return None
 
 def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
+    """
+    Edición quirúrgica segura.
+    """
     try:
         if "GITHUB_TOKEN" not in st.secrets:
             st.error("❌ Falta GITHUB_TOKEN en Secrets.")
@@ -63,6 +67,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
         g = Github(token)
         repo = g.get_repo(GITHUB_REPO_NAME)
         
+        # 1. Obtener el archivo binario ACTUAL de GitHub
         try:
             contents = repo.get_contents(NOMBRE_ARCHIVO_EXCEL)
             file_content = io.BytesIO(contents.decoded_content)
@@ -71,6 +76,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             st.error("⚠️ El archivo no existe en GitHub. Súbelo manualmente primero.")
             return False
 
+        # 2. Cargar con openpyxl (Modo seguro para xlsx)
         wb = openpyxl.load_workbook(file_content, data_only=False) 
         
         if hoja_nombre not in wb.sheetnames:
@@ -79,6 +85,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             
         ws = wb[hoja_nombre]
         
+        # 3. Buscar columna Manual
         col_manual_idx = None
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
         
@@ -92,6 +99,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             st.error("⚠️ No se encontró la columna 'Fecha_Real_Manual'.")
             return False
 
+        # 4. Inyectar datos
         col_manual_key = [c for c in df_editado.columns if "Fecha_Real_Manual" in c or "Fecha Real Manual" in c]
         if not col_manual_key: return False
         col_manual_key = col_manual_key[0]
@@ -101,6 +109,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
             val_to_write = fecha_valor if pd.notnull(fecha_valor) else None
             ws.cell(row=row_idx, column=col_manual_idx).value = val_to_write
 
+        # 5. Guardar
         output = io.BytesIO()
         wb.save(output)
         datos_binarios = output.getvalue()
@@ -108,6 +117,7 @@ def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
         mensaje = f"Update Web {datetime.now().strftime('%H:%M')}"
         repo.update_file(contents.path, mensaje, datos_binarios, contents.sha)
 
+        # 6. Webhook
         if "WEBHOOK_URL" in st.secrets:
             try: requests.post(st.secrets["WEBHOOK_URL"], json={"msg": "update"}, timeout=5)
             except: pass
@@ -289,104 +299,6 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
 
     return fig
 
-def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
-    col_vigente, col_teorica = 'Fecha_Vigente', 'Fecha_teorica'
-    ocupacion_niveles, niveles_asignados = {}, []
-    BASE_NIVEL_POS = 5.0; BASE_NIVEL_NEG = -5.0; STEP_NIVEL = 2.5; MARGEN_DIAS = 75
-    niveles_flechas_pos, niveles_flechas_neg = [0.8, 1.6, 2.4], [-0.8, -1.6, -2.4]
-    ocupacion_flechas = {lvl: [] for lvl in niveles_flechas_pos + niveles_flechas_neg}
-
-    for index, row in df_plot.iterrows():
-        fecha = row[col_vigente]; es_positivo = (index % 2 == 0)
-        nivel_actual = BASE_NIVEL_POS if es_positivo else BASE_NIVEL_NEG
-        encontrado, intentos = False, 0
-        while intentos < 20:
-            colision = False
-            if nivel_actual in ocupacion_niveles:
-                for f_ocupada in ocupacion_niveles[nivel_actual]:
-                    if abs((fecha - f_ocupada).days) < MARGEN_DIAS: colision = True; break
-            if not colision:
-                if nivel_actual not in ocupacion_niveles: ocupacion_niveles[nivel_actual] = []
-                ocupacion_niveles[nivel_actual].append(fecha)
-                niveles_asignados.append(nivel_actual); encontrado = True; break
-            if es_positivo: nivel_actual += STEP_NIVEL
-            else: nivel_actual -= STEP_NIVEL
-            intentos += 1
-        if not encontrado:
-            niveles_asignados.append(nivel_actual)
-            if nivel_actual not in ocupacion_niveles: ocupacion_niveles[nivel_actual] = []
-            ocupacion_niveles[nivel_actual].append(fecha)
-    
-    df_plot['nivel'] = niveles_asignados
-
-    def obtener_carril_flecha(f_inicio, f_fin, es_arriba):
-        carriles = niveles_flechas_pos if es_arriba else niveles_flechas_neg
-        start, end = min(f_inicio, f_fin), max(f_inicio, f_fin)
-        for carril in carriles:
-            libre = True
-            for (o_start, o_end) in ocupacion_flechas[carril]:
-                if (start <= o_end + timedelta(days=5)) and (end >= o_start - timedelta(days=5)): libre = False; break
-            if libre: ocupacion_flechas[carril].append((start, end)); return carril
-        return carriles[len(carriles) // 2]
-
-    fig, ax = plt.subplots(figsize=(16, 9), constrained_layout=True)
-    ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
-    plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
-
-    for i, row in df_plot.iterrows():
-        f_vigente = row[col_vigente]; f_teorica = row[col_teorica]; nivel = row['nivel']
-        agente = str(row['Agente']); color = mapa_colores.get(agente, '#7f8c8d')
-        
-        ax.vlines(f_vigente, 0, nivel, color=color, alpha=0.5, linewidth=1, linestyle='-', zorder=1)
-        ax.scatter(f_vigente, 0, s=60, color=color, marker='o', zorder=3)
-
-        if pd.notnull(f_teorica):
-            dias = (f_vigente - f_teorica).days
-            if abs(dias) > 5:
-                es_arriba = (nivel > 0)
-                altura_cota = obtener_carril_flecha(f_teorica, f_vigente, es_arriba)
-                f_ini_vis = max(f_teorica, f_inicio)
-                if f_teorica >= f_inicio:
-                    ax.vlines(f_teorica, 0, altura_cota, color='#bdc3c7', alpha=0.8, linestyles=':', zorder=1)
-                    ax.scatter(f_teorica, 0, s=20, color='#bdc3c7', marker='|', zorder=2)
-                ax.annotate("", xy=(f_vigente, altura_cota), xytext=(f_ini_vis, altura_cota), arrowprops=dict(arrowstyle="->", color='#555555', lw=0.9), zorder=20)
-                pos_txt = max(f_ini_vis, f_vigente - timedelta(days=6))
-                signo = "+" if dias > 0 else ""
-                ax.text(pos_txt, altura_cota - 0.25, f"{signo}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
-
-        texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row['Hito / Etapa']), 25)}\n{fecha_es(f_vigente)}"
-        ax.annotate(texto_lbl, xy=(f_vigente, nivel), xytext=(f_vigente, nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
-
-    ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False); ax.yaxis.set_visible(False)
-    ax.set_xlim(f_inicio, f_fin)
-    
-    max_y = df_plot['nivel'].max() if not df_plot['nivel'].empty else 4
-    min_y = df_plot['nivel'].min() if not df_plot['nivel'].empty else -4
-    limite_superior = max(8, max_y + 3.0); limite_inferior = min(-8, min_y - 3.0)
-    ax.set_ylim(limite_inferior, limite_superior)
-
-    if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
-        hoy = datetime.now()
-        ax.axvline(hoy, color='#e74c3c', linestyle='--', alpha=0.8, linewidth=1.5, zorder=0)
-        offset_dias_hoy = (f_fin - f_inicio).days * 0.008
-        ax.text(hoy - timedelta(days=offset_dias_hoy), limite_superior * 0.95, f"HOY\n{fecha_es(hoy, 'hoy_full')}", color='#e74c3c', fontsize=9, fontweight='bold', ha='right', va='top')
-
-    ax.xaxis.set_major_locator(mdates.MonthLocator())
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: fecha_es(mdates.num2date(x), "eje")))
-    
-    titulo_limpio = titulo.replace('_', ' ')
-    plt.title(f"Línea de Tiempo: {titulo_limpio}", fontsize=18, fontweight='bold', color='#2c3e50', pad=25)
-    
-    leyenda = [Patch(facecolor=mapa_colores.get(a, '#7f8c8d'), label=a) for a in df_plot['Agente'].unique()]
-    leyenda.append(Line2D([0],[0], color='#555555', lw=1, marker='>', label='Días Retraso'))
-    ax.legend(handles=leyenda, title="Agentes Responsables", loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=4, fancybox=True, shadow=True)
-
-    if tipo_rango == 3:
-        txt_rango = f"Periodo Personalizado:\n{f_inicio.strftime('%d/%m/%Y')} - {f_fin.strftime('%d/%m/%Y')}"
-        ax.text(0.0, -0.14, txt_rango, transform=ax.transAxes, fontsize=9, color='#555555', va='top', ha='left', bbox=dict(boxstyle="round,pad=0.4", fc="#ecf0f1", ec="#bdc3c7", lw=1))
-
-    return fig
-
 # ==========================================
 # 3. INTERFAZ STREAMLIT (FINAL)
 # ==========================================
@@ -518,7 +430,10 @@ try:
             
             # --- 1. CARGA INICIAL ---
             df_edit = pd.read_excel(xl_file, sheet_name=hoja_edit)
-            df_edit = normalizar_columnas(df_edit) # Importante: Normalizar aquí también
+            # NO normalizamos aquí para mantener los nombres originales en la vista de edición si es posible,
+            # pero para asegurar que la lógica funcione, normalizaremos y renombraremos internamente si hace falta.
+            # Mejor opción: Normalizar para trabajar con nombres estándar.
+            df_edit = normalizar_columnas(df_edit) 
 
             # --- 2. CONVERSIÓN DE TIPOS ---
             cols_fechas_clave = ['Fecha_Real_Manual', 'Fecha_Proyectada', 'Fecha_teorica', 'Fecha_Vigente']
@@ -528,7 +443,6 @@ try:
 
             # --- 3. 🧠 LÓGICA DE NEGOCIO: CÁLCULO ESPEJO (PARCHE VISUAL) ---
             # Si hay fecha manual -> manual. Si no -> Proyectada.
-            # Usamos fillna() que es más directo para este caso.
             if 'Fecha_Proyectada' in df_edit.columns and 'Fecha_Real_Manual' in df_edit.columns:
                 df_edit['Fecha_Vigente'] = df_edit['Fecha_Real_Manual'].fillna(df_edit['Fecha_Proyectada'])
             
@@ -543,11 +457,13 @@ try:
                 
                 df_edit.insert(0, "Estado", df_edit["Fecha_Vigente"].apply(obtener_estado))
 
-            # --- 5. COLUMNAS A MOSTRAR ---
+            # --- 5. COLUMNAS A MOSTRAR (SIN FECHA TEORICA) ---
             cols_deseadas = [
                 "Estado", 
                 "Norma", "Proceso", "Hito / Etapa", "Agente",
-                "Fecha_teorica", "Fecha_Real_Manual", "Fecha_Vigente", 
+                # "Fecha_teorica", <--- ELIMINADA
+                "Fecha_Real_Manual", 
+                "Fecha_Vigente", 
                 "Respuesta/Interactua", "Descripción"
             ]
             
@@ -563,7 +479,7 @@ try:
                 "Agente": st.column_config.TextColumn(disabled=True),
                 "Respuesta/Interactua": st.column_config.TextColumn(disabled=True),
                 "Descripción": st.column_config.TextColumn(disabled=True),
-                "Fecha_teorica": st.column_config.DateColumn("Fecha Teórica", format="DD/MM/YYYY", disabled=True),
+                # "Fecha_teorica": st.column_config.DateColumn("Fecha Teórica", format="DD/MM/YYYY", disabled=True), # <--- ELIMINADA
                 "Fecha_Vigente": st.column_config.DateColumn("Fecha Vigente (Calc)", format="DD/MM/YYYY", disabled=True),
                 
                 # ÚNICA EDITABLE

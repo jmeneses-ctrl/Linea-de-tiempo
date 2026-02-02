@@ -21,6 +21,8 @@ import openpyxl
 st.set_page_config(layout="wide", page_title="Línea de Tiempo", page_icon="📊")
 
 # --- TUS DATOS ---
+# RECUERDA: Has cambiado tus tokens. Asegúrate de que esta URL siga siendo válida 
+# y apunte al archivo correcto en tu SharePoint/OneDrive.
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
 GITHUB_REPO_NAME = "alertacode/Linea-de-tiempo" 
 NOMBRE_ARCHIVO_EXCEL = "db_decreto10.xlsx" 
@@ -161,7 +163,7 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS (RESTAURADOS)
+# 2. MOTORES GRÁFICOS (AGENTE EN NEGRITA)
 # ==========================================
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
@@ -242,7 +244,14 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 dias = (x - f_teorica).days
                 pos_txt = max(max(f_teorica, f_inicio), x - timedelta(days=6))
                 ax.text(pos_txt, carril-0.25, f"{'+' if dias>0 else ''}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
-            texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row.get('Hito / Etapa','')), 25)}\n{fecha_es(x)}"
+            
+            # --- MODIFICACIÓN: AGENTE EN NEGRITA (USANDO TeX) ---
+            ag_txt = textwrap.fill(agente.upper(), 20)
+            hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
+            fe_txt = fecha_es(x)
+            texto_lbl = rf"$\textbf{{{ag_txt}}}$" + f"\n{hi_txt}\n{fe_txt}"
+            # ----------------------------------------------------
+            
             ax.annotate(texto_lbl, xy=(x, y), xytext=(x, y), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
         elif item['tipo'] == 'arbol':
             fecha = item['fecha']; y_fin = item['y_fin_tronco']; ramas = item['ramas']; agente_raiz = item['agente_raiz']
@@ -258,7 +267,14 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 x_linea_fin = x_caja - offset_gap if es_derecha else x_caja + offset_gap
                 ax.plot([fecha, x_linea_fin], [y_nivel, y_nivel], color=color, linewidth=1.5, zorder=2)
                 ax.scatter(fecha, y_nivel, s=30, color=color, zorder=3)
-                texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row.get('Hito / Etapa','')), 25)}\n{fecha_es(fecha)}"
+                
+                # --- MODIFICACIÓN: AGENTE EN NEGRITA (USANDO TeX) ---
+                ag_txt = textwrap.fill(agente.upper(), 20)
+                hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
+                fe_txt = fecha_es(fecha)
+                texto_lbl = rf"$\textbf{{{ag_txt}}}$" + f"\n{hi_txt}\n{fe_txt}"
+                # ----------------------------------------------------
+
                 ax.annotate(texto_lbl, xy=(x_caja, y_nivel), xytext=(x_caja, y_nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=1.0), ha='center', va='center', fontsize=7.5, color='#2c3e50', zorder=10)
                 f_teorica = row.get('Fecha_teorica', pd.NaT)
                 if pd.notnull(f_teorica) and abs((fecha - f_teorica).days) > 3:
@@ -557,7 +573,7 @@ try:
             cols_deseadas = [
                 "Estado", 
                 "Norma", "Proceso", "Hito / Etapa", "Agente",
-                # "Fecha_teorica" (ELIMINADA de la vista como pediste)
+                # "Fecha_teorica" (ELIMINADA de la vista)
                 "Fecha_Real_Manual", 
                 "Fecha_Vigente", 
                 "Respuesta/Interactua", "Descripción"

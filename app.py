@@ -55,7 +55,7 @@ def cargar_datos_desde_nube(url):
 
 def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
     """
-    Edición quirúrgica segura.
+    Edición quirúrgica segura. 
     """
     try:
         if "GITHUB_TOKEN" not in st.secrets:
@@ -153,7 +153,7 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS (NEGRITAS EN AMBOS)
+# 2. MOTORES GRÁFICOS (CORREGIDOS)
 # ==========================================
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
@@ -235,12 +235,12 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 pos_txt = max(max(f_teorica, f_inicio), x - timedelta(days=6))
                 ax.text(pos_txt, carril-0.25, f"{'+' if dias>0 else ''}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
             
-            # --- NEGRITA ---
+            # --- MODIFICACIÓN: AGENTE EN NEGRITA (Mathtext con espacios escapados) ---
+            # Reemplazamos espacios por '\ ' para que Mathtext no los borre
             ag_clean = agente.upper().replace(" ", r"\ ")
             hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
             fe_txt = fecha_es(x)
             texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
-            # ---------------
             
             ax.annotate(texto_lbl, xy=(x, y), xytext=(x, y), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
         elif item['tipo'] == 'arbol':
@@ -258,12 +258,11 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 ax.plot([fecha, x_linea_fin], [y_nivel, y_nivel], color=color, linewidth=1.5, zorder=2)
                 ax.scatter(fecha, y_nivel, s=30, color=color, zorder=3)
                 
-                # --- NEGRITA ---
+                # --- MODIFICACIÓN: AGENTE EN NEGRITA (Mathtext con espacios escapados) ---
                 ag_clean = agente.upper().replace(" ", r"\ ")
                 hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
                 fe_txt = fecha_es(fecha)
                 texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
-                # ---------------
 
                 ax.annotate(texto_lbl, xy=(x_caja, y_nivel), xytext=(x_caja, y_nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=1.0), ha='center', va='center', fontsize=7.5, color='#2c3e50', zorder=10)
                 f_teorica = row.get('Fecha_teorica', pd.NaT)
@@ -350,12 +349,14 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
     plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
 
-    # Límites calculados ANTES de iterar para evitar error 'limite_superior is not defined'
+    # --- CORRECCIÓN DE ERROR LIMITE_SUPERIOR ---
+    # Calculamos los límites ANTES de iterar para usarlos en el texto "HOY"
     max_y = df_plot['nivel'].max() if not df_plot['nivel'].empty else 4
     min_y = df_plot['nivel'].min() if not df_plot['nivel'].empty else -4
     limite_superior = max(8, max_y + 3.0)
     limite_inferior = min(-8, min_y - 3.0)
     ax.set_ylim(limite_inferior, limite_superior)
+    # ------------------------------------------
 
     for i, row in df_plot.iterrows():
         f_vigente = row[col_vigente]; f_teorica = row[col_teorica]; nivel = row['nivel']
@@ -378,18 +379,14 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
                 signo = "+" if dias > 0 else ""
                 ax.text(pos_txt, altura_cota - 0.25, f"{signo}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
 
-        # --- NEGRITA TAMBIÉN EN MODO ESTÁNDAR ---
-        ag_clean = agente.upper().replace(" ", r"\ ")
-        hi_txt = textwrap.fill(str(row['Hito / Etapa']), 25)
-        fe_txt = fecha_es(f_vigente)
-        texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
-        # ----------------------------------------
-
+        texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row['Hito / Etapa']), 25)}\n{fecha_es(f_vigente)}"
         ax.annotate(texto_lbl, xy=(f_vigente, nivel), xytext=(f_vigente, nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
 
     ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False); ax.yaxis.set_visible(False)
     ax.set_xlim(f_inicio, f_fin)
     
+    # Límites ya calculados arriba para evitar error
+
     if mostrar_hoy and (f_inicio <= datetime.now() <= f_fin):
         hoy = datetime.now()
         ax.axvline(hoy, color='#e74c3c', linestyle='--', alpha=0.8, linewidth=1.5, zorder=0)
@@ -620,4 +617,3 @@ try:
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
-

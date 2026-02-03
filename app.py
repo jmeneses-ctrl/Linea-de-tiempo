@@ -55,7 +55,7 @@ def cargar_datos_desde_nube(url):
 
 def guardar_en_github_manteniendo_formulas(df_editado, hoja_nombre):
     """
-    Edición quirúrgica segura.
+    Edición quirúrgica segura sin romper el binario xlsx.
     """
     try:
         if "GITHUB_TOKEN" not in st.secrets:
@@ -153,7 +153,7 @@ def requiere_formato_arbol(df, col_fecha='Fecha_Vigente'):
     return (conteo > 1).any()
 
 # ==========================================
-# 2. MOTORES GRÁFICOS (ESPACIOS AMPLIADOS)
+# 2. MOTORES GRÁFICOS (VERSIÓN ESTÁNDAR)
 # ==========================================
 
 def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_hoy, tipo_rango):
@@ -161,16 +161,11 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
     ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
     plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
 
-    # --- AJUSTE MÁXIMO DE COLISIÓN ---
-    # Reservamos mucho más espacio horizontal y vertical para compensar las negritas
-    ANCHO_CAJA_DIAS = max(65, (f_fin - f_inicio).days * 0.15) # Aumentado significativamente
+    # --- CONFIGURACIÓN ORIGINAL ESTABLE ---
+    ANCHO_CAJA_DIAS = max(25, (f_fin - f_inicio).days * 0.08)
     OFFSET_CONEXION_DIAS = ANCHO_CAJA_DIAS * 0.05
-    
-    # Niveles verticales mucho más separados
-    NIVEL_MIN_SINGLE = 4.5 
-    STEP_SINGLE = 5.0      # Mucho aire vertical
-    NIVEL_MIN_ARBOL = 7.0  
-    STEP_ARBOL = 6.0       # Mucho aire para árboles
+    NIVEL_MIN_SINGLE = 3.5; STEP_SINGLE = 2.5
+    NIVEL_MIN_ARBOL = 5.0; STEP_ARBOL = 3.0
 
     cajas_ocupadas = []; elementos_finales = []
     grupos = df_plot.groupby('Fecha_Vigente')
@@ -183,9 +178,8 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
         es_positivo = (i % 2 == 0)
         nivel_base = NIVEL_MIN_SINGLE if es_positivo else -NIVEL_MIN_SINGLE
         encontrado = False; intentos = 0; nivel_actual = nivel_base
-        while intentos < 30: # Más intentos de búsqueda
-            # Margen de seguridad vertical aumentado (+/- 2.0)
-            y_min, y_max = nivel_actual - 2.0, nivel_actual + 2.0
+        while intentos < 20:
+            y_min, y_max = nivel_actual - 1.0, nivel_actual + 1.0
             x_min, x_max = fecha - timedelta(days=ANCHO_CAJA_DIAS/2), fecha + timedelta(days=ANCHO_CAJA_DIAS/2)
             colision = False
             for (ox1, ox2, oy1, oy2) in cajas_ocupadas:
@@ -202,7 +196,7 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
     for i_arbol, (fecha, grupo) in enumerate(lista_arboles):
         cantidad = len(grupo); trunk_dir = 1 if i_arbol % 2 == 0 else -1
         altura_base_tronco = NIVEL_MIN_ARBOL; encontrado_tronco = False; intentos_tronco = 0
-        while intentos_tronco < 20:
+        while intentos_tronco < 15:
             colision_arbol_entero = False; temp_cajas_ramas = []; temp_posiciones = []
             alto_total = altura_base_tronco + (cantidad - 1) * STEP_ARBOL
             y_fin_tronco = alto_total * trunk_dir
@@ -211,11 +205,8 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 y_nivel = (altura_base_tronco + (i_hito * STEP_ARBOL)) * trunk_dir
                 es_derecha = (i_hito % 2 == 0); dir_h = 1 if es_derecha else -1
                 x_caja = fecha + timedelta(days=ANCHO_CAJA_DIAS * dir_h)
-                
-                # Margen de seguridad vertical aumentado para ramas (+/- 2.2)
-                y_min_box, y_max_box = y_nivel - 2.2, y_nivel + 2.2
+                y_min_box, y_max_box = y_nivel - 1.2, y_nivel + 1.2
                 x_min_box, x_max_box = min(fecha, x_caja) - timedelta(days=5), max(fecha, x_caja) + timedelta(days=5)
-                
                 for (ox1, ox2, oy1, oy2) in cajas_ocupadas:
                     if (x_min_box < ox2 and x_max_box > ox1) and (y_min_box < oy2 and y_max_box > oy1):
                         colision_arbol_entero = True; break
@@ -246,13 +237,10 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 pos_txt = max(max(f_teorica, f_inicio), x - timedelta(days=6))
                 ax.text(pos_txt, carril-0.25, f"{'+' if dias>0 else ''}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
             
-            # --- NEGRITA (Modo Árbol - Single) ---
-            ag_clean = agente.upper().replace(" ", r"\ ")
-            hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
-            fe_txt = fecha_es(x)
-            texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
+            # --- TEXTO NORMAL (SIN NEGRITA) PARA EVITAR COLISIONES ---
+            texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row.get('Hito / Etapa','')), 25)}\n{fecha_es(x)}"
             
-            ax.annotate(texto_lbl, xy=(x, y), xytext=(x, y), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=7, color='#2c3e50', zorder=10)
+            ax.annotate(texto_lbl, xy=(x, y), xytext=(x, y), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
         elif item['tipo'] == 'arbol':
             fecha = item['fecha']; y_fin = item['y_fin_tronco']; ramas = item['ramas']; agente_raiz = item['agente_raiz']
             if abs(y_fin) > max_abs_y: max_abs_y = abs(y_fin)
@@ -268,13 +256,10 @@ def graficar_modo_arbol(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostrar_
                 ax.plot([fecha, x_linea_fin], [y_nivel, y_nivel], color=color, linewidth=1.5, zorder=2)
                 ax.scatter(fecha, y_nivel, s=30, color=color, zorder=3)
                 
-                # --- NEGRITA (Modo Árbol - Ramas) ---
-                ag_clean = agente.upper().replace(" ", r"\ ")
-                hi_txt = textwrap.fill(str(row.get('Hito / Etapa','')), 25)
-                fe_txt = fecha_es(fecha)
-                texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
+                # --- TEXTO NORMAL (SIN NEGRITA) ---
+                texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row.get('Hito / Etapa','')), 25)}\n{fecha_es(fecha)}"
 
-                ax.annotate(texto_lbl, xy=(x_caja, y_nivel), xytext=(x_caja, y_nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=1.0), ha='center', va='center', fontsize=7, color='#2c3e50', zorder=10)
+                ax.annotate(texto_lbl, xy=(x_caja, y_nivel), xytext=(x_caja, y_nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=1.0), ha='center', va='center', fontsize=7.5, color='#2c3e50', zorder=10)
                 f_teorica = row.get('Fecha_teorica', pd.NaT)
                 if pd.notnull(f_teorica) and abs((fecha - f_teorica).days) > 3:
                     offset_flecha = 1.2 if y_nivel > 0 else -1.2
@@ -359,7 +344,7 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
     ax.axhline(0, color="#34495e", linewidth=2, zorder=1)
     plt.figtext(0.015, 0.98, f"Generado: {datetime.now().strftime('%d/%m/%Y')}", fontsize=10, color='#555555')
 
-    # Límites calculados ANTES de iterar para evitar error 'limite_superior is not defined'
+    # Corrección de limite_superior definida antes de uso
     max_y = df_plot['nivel'].max() if not df_plot['nivel'].empty else 4
     min_y = df_plot['nivel'].min() if not df_plot['nivel'].empty else -4
     limite_superior = max(8, max_y + 3.0)
@@ -387,13 +372,9 @@ def graficar_modo_estandar(df_plot, titulo, f_inicio, f_fin, mapa_colores, mostr
                 signo = "+" if dias > 0 else ""
                 ax.text(pos_txt, altura_cota - 0.25, f"{signo}{dias}d", ha='center', va='top', fontsize=7, color='#555555', fontweight='bold', zorder=30).set_path_effects([pe.withStroke(linewidth=2.0, foreground='white')])
 
-        # --- NEGRITA TAMBIÉN EN MODO ESTÁNDAR ---
-        ag_clean = agente.upper().replace(" ", r"\ ")
-        hi_txt = textwrap.fill(str(row['Hito / Etapa']), 25)
-        fe_txt = fecha_es(f_vigente)
-        texto_lbl = rf"$\bf{{{ag_clean}}}$" + f"\n{hi_txt}\n{fe_txt}"
-        # ----------------------------------------
-
+        # --- TEXTO NORMAL ---
+        texto_lbl = f"{textwrap.fill(agente.upper(), 20)}\n{textwrap.fill(str(row['Hito / Etapa']), 25)}\n{fecha_es(f_vigente)}"
+        
         ax.annotate(texto_lbl, xy=(f_vigente, nivel), xytext=(f_vigente, nivel), bbox=dict(boxstyle="round,pad=0.4", fc="white", ec=color, lw=1.5, alpha=0.95), ha='center', va='center', fontsize=8, color='#2c3e50', zorder=10)
 
     ax.spines['left'].set_visible(False); ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False); ax.yaxis.set_visible(False)
@@ -539,7 +520,7 @@ try:
                             img = io.BytesIO()
                             plt.savefig(img, format='png', dpi=400, bbox_inches='tight', pad_inches=0.2)
                             img.seek(0)
-                            st.download_button(label="💾 Descargar Imagen", data=img, file_name=fn, mime="image/png")
+                            st.download_button(label="💾 Descargar Imagen HD", data=img, file_name=fn, mime="image/png")
 
         # ==========================
         # PESTAÑA 2: GESTIÓN (EDICIÓN)

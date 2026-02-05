@@ -22,7 +22,7 @@ st.set_page_config(layout="wide", page_title="Línea de Tiempo", page_icon="📊
 
 # --- TUS DATOS ---
 URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/ep_tvaldes_colbun_cl/_layouts/15/guestaccess.aspx?share=IQD3gVYvlakxQJSzuVvTQAR4AcK2dfpMmRikeD4OSW0kSEE&e=muZP0V"
-GITHUB_REPO_NAME = "alertacode/Linea-de-tiempo" 
+GITHUB_REPO_NAME = "jmeneses-ctrl/Linea-de-tiempo" 
 NOMBRE_ARCHIVO_EXCEL = "db_decreto10.xlsx" 
 
 def transformar_url_onedrive(url):
@@ -610,3 +610,4 @@ try:
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
+

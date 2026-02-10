@@ -21,7 +21,7 @@ import openpyxl
 st.set_page_config(layout="wide", page_title="Línea de Tiempo", page_icon="📊")
 
 # --- TUS DATOS ---
-URL_ORIGINAL = "C:\Users\jmeneses\OneDrive - Colbun S.A\Biblioteca"
+URL_ORIGINAL = "https://colbun-my.sharepoint.com/personal/jmeneses_colbun_cl/_layouts/15/guestaccess.aspx?share=IQAqumyfCDuPQ4a3WUgjrxWwAaXoORiZ8TiCVI8NoNB0YJE&e=37O57u"
 GITHUB_REPO_NAME = "jmeneses-ctrl/Linea-de-tiempo" 
 NOMBRE_ARCHIVO_EXCEL = "db_decreto10.xlsx" 
 
@@ -610,6 +610,7 @@ try:
 
 except Exception as e:
     st.error(f"Error al procesar el archivo: {e}")
+
 
 
 
